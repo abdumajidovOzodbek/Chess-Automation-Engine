@@ -3,20 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Chess Research Framework API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: sessions
+    description: Automation session management
+  - name: analysis
+    description: Position analysis
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +27,487 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /sessions:
+    get:
+      operationId: listSessions
+      tags: [sessions]
+      summary: List all sessions
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionSummary"
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Start a new automation session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{id}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get session details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: stopSession
+      tags: [sessions]
+      summary: Stop a running session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{id}/state:
+    get:
+      operationId: getSessionState
+      tags: [sessions]
+      summary: Get current board state for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current board state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardStateResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{id}/moves:
+    get:
+      operationId: getSessionMoves
+      tags: [sessions]
+      summary: Get move history for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Move history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MoveEntry"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{id}/timing:
+    get:
+      operationId: getSessionTiming
+      tags: [sessions]
+      summary: Get timing analysis for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Timing statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimingStats"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{id}/pgn:
+    get:
+      operationId: getSessionPgn
+      tags: [sessions]
+      summary: Export session as PGN
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PGN string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PgnResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /analyze:
+    post:
+      operationId: analyzePosition
+      tags: [analysis]
+      summary: Analyze a FEN position with Stockfish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisRequest"
+      responses:
+        "200":
+          description: Analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResult"
+        "400":
+          description: Invalid FEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    SessionInput:
+      type: object
+      required: [url, color]
+      properties:
+        url:
+          type: string
+          description: Target chess platform URL
+        color:
+          type: string
+          enum: [w, b]
+          description: Piece color to play as
+        username:
+          type: ["string", "null"]
+          description: Login username
+        password:
+          type: ["string", "null"]
+          description: Login password
+        depth:
+          type: ["integer", "null"]
+          description: Engine search depth (default 18)
+        movetime:
+          type: ["integer", "null"]
+          description: Max engine think time in ms (default 3000)
+        moveDelayMs:
+          type: ["integer", "null"]
+          description: Base delay before move execution in ms
+        moveJitterMs:
+          type: ["integer", "null"]
+          description: Random jitter added to delay in ms
+        headless:
+          type: ["boolean", "null"]
+          description: Run browser in headless mode
+
+    SessionSummary:
+      type: object
+      required: [id, status, url, color, startedAt, moveCount]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [starting, active, paused, stopped, error]
+        url:
+          type: string
+        color:
+          type: string
+          enum: [w, b]
+        startedAt:
+          type: integer
+        endedAt:
+          type: ["integer", "null"]
+        moveCount:
+          type: integer
+        result:
+          type: ["string", "null"]
+        currentFen:
+          type: ["string", "null"]
+
+    Session:
+      type: object
+      required: [id, status, url, color, startedAt, moveCount, config]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [starting, active, paused, stopped, error]
+        url:
+          type: string
+        color:
+          type: string
+          enum: [w, b]
+        startedAt:
+          type: integer
+        endedAt:
+          type: ["integer", "null"]
+        moveCount:
+          type: integer
+        result:
+          type: ["string", "null"]
+        currentFen:
+          type: ["string", "null"]
+        lastMove:
+          type: ["string", "null"]
+        isCheck:
+          type: ["boolean", "null"]
+        config:
+          $ref: "#/components/schemas/SessionConfig"
+
+    SessionConfig:
+      type: object
+      required: [url, color]
+      properties:
+        url:
+          type: string
+        color:
+          type: string
+        depth:
+          type: integer
+        movetime:
+          type: integer
+        moveDelayMs:
+          type: integer
+        moveJitterMs:
+          type: integer
+        headless:
+          type: boolean
+
+    BoardStateResponse:
+      type: object
+      required: [fen, turn, moveNumber, isCheck, isCheckmate, isStalemate, isDraw]
+      properties:
+        fen:
+          type: string
+        turn:
+          type: string
+          enum: [w, b]
+        moveNumber:
+          type: integer
+        isCheck:
+          type: boolean
+        isCheckmate:
+          type: boolean
+        isStalemate:
+          type: boolean
+        isDraw:
+          type: boolean
+        lastMove:
+          type: ["string", "null"]
+        legalMoves:
+          type: array
+          items:
+            type: string
+
+    MoveEntry:
+      type: object
+      required: [id, moveNumber, color, uci, san, fen, timestamp, thinkingTimeMs, executionTimeMs, source]
+      properties:
+        id:
+          type: string
+        moveNumber:
+          type: integer
+        color:
+          type: string
+          enum: [w, b]
+        uci:
+          type: string
+        san:
+          type: string
+        fen:
+          type: string
+        timestamp:
+          type: integer
+        thinkingTimeMs:
+          type: integer
+        executionTimeMs:
+          type: integer
+        source:
+          type: string
+          enum: [engine, human, replay]
+        engineScore:
+          type: ["number", "null"]
+        engineDepth:
+          type: ["integer", "null"]
+        bestLine:
+          type: ["string", "null"]
+
+    TimingStats:
+      type: object
+      required: [sessionId, totalMoves, averageThinkingMs, averageExecutionMs]
+      properties:
+        sessionId:
+          type: string
+        totalMoves:
+          type: integer
+        averageThinkingMs:
+          type: number
+        averageExecutionMs:
+          type: number
+        minThinkingMs:
+          type: ["number", "null"]
+        maxThinkingMs:
+          type: ["number", "null"]
+        p95ThinkingMs:
+          type: ["number", "null"]
+        medianThinkingMs:
+          type: ["number", "null"]
+        durationMs:
+          type: ["integer", "null"]
+
+    PgnResponse:
+      type: object
+      required: [pgn, sessionId]
+      properties:
+        pgn:
+          type: string
+        sessionId:
+          type: string
+
+    AnalysisRequest:
+      type: object
+      required: [fen]
+      properties:
+        fen:
+          type: string
+        depth:
+          type: ["integer", "null"]
+        movetime:
+          type: ["integer", "null"]
+        multiPv:
+          type: ["integer", "null"]
+
+    EngineLineResult:
+      type: object
+      required: [uci, rank]
+      properties:
+        uci:
+          type: string
+        san:
+          type: ["string", "null"]
+        rank:
+          type: integer
+        score:
+          type: ["number", "null"]
+        mate:
+          type: ["integer", "null"]
+        depth:
+          type: ["integer", "null"]
+        pv:
+          type: array
+          items:
+            type: string
+
+    AnalysisResult:
+      type: object
+      required: [fen, bestMove, lines, thinkingTimeMs]
+      properties:
+        fen:
+          type: string
+        bestMove:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/EngineLineResult"
+        thinkingTimeMs:
+          type: integer
+        turn:
+          type: string
+          enum: [w, b]
+        isCheck:
+          type: boolean
+        isCheckmate:
+          type: boolean
