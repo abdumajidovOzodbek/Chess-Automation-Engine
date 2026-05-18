@@ -132,6 +132,7 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
     .then(() => {
       record.status = "active";
       record.phase = "Playing";
+      record.errorMessage = undefined;
       logger.info({ sessionId: id }, "Session started successfully");
 
       const sync = facade.getSynchronizer();
@@ -170,11 +171,14 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
         });
       }
     })
-    .catch((err: unknown) => {
+    .catch(async (err: unknown) => {
       record.status = "error";
       record.endedAt = Date.now();
       record.errorMessage = err instanceof Error ? err.message : String(err);
       logger.error({ sessionId: id, err }, "Session start failed");
+      // Always shut down the browser on failure to avoid zombie Playwright processes
+      try { await facade.shutdown(); } catch { /* ignore shutdown errors */ }
+      record.facade = null;
     });
 
   return record;

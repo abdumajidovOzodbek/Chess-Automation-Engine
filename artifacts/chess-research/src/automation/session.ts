@@ -65,20 +65,39 @@ export class SessionManager {
   }
 
   private async performLogin(page: Page): Promise<void> {
+    const { mkdirSync } = await import("fs");
+    const debugDir = "/tmp/cf-login-debug";
+    try { mkdirSync(debugDir, { recursive: true }); } catch { /* ok */ }
+    const snap = async (name: string) => {
+      try { await page.screenshot({ path: `${debugDir}/${name}.png` }); } catch { /* ok */ }
+    };
+
     // ── Step 1: Open the login dialog ─────────────────────────────────────────
     const loginSelector = this.config.loginSelector!;
     const loginBtn = page.locator(loginSelector).first();
 
+    await snap("01-before-signin-click");
     const loginBtnVisible = await loginBtn.isVisible({ timeout: 8_000 }).catch(() => false);
+    logger.info({ loginBtnVisible, loginSelector }, "Login button visibility check");
     if (loginBtnVisible) {
       logger.debug({ loginSelector }, "Clicking login button to open form");
       await loginBtn.click();
       // Wait for the login form inputs to appear
       await page.waitForSelector('input[name="nickname"]', { timeout: 10_000 }).catch(() => {});
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(800);
+      await snap("02-after-signin-click");
     } else {
       logger.warn({ loginSelector }, "Login button not found — trying to fill form directly");
+      await snap("02-no-signin-btn");
     }
+
+    // Debug: log all inputs on page
+    const inputsFound = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("input")).map((i) => ({
+        type: i.type, name: i.name, visible: !!i.offsetParent,
+      }))
+    ).catch(() => []);
+    logger.info({ inputs: inputsFound }, "Inputs found after login btn click");
 
     // ── Step 2: Fill username ──────────────────────────────────────────────────
     const usernameField = page.locator(this.config.usernameSelector!).first();
@@ -99,6 +118,7 @@ export class SessionManager {
     logger.debug("Password filled");
 
     await page.waitForTimeout(400);
+    await snap("03-filled");
 
     // ── Step 4: Submit the form ────────────────────────────────────────────────
     // Primary: press Enter on the password field — most reliable for Sencha Touch forms
@@ -110,9 +130,9 @@ export class SessionManager {
     try {
       await passwordField.press("Enter");
       submitted = true;
-      logger.debug("Submitted via Enter key on password field");
+      logger.info("Submitted via Enter key on password field");
     } catch (e) {
-      logger.debug({ err: e }, "Enter key failed — trying force click");
+      logger.warn({ err: e }, "Enter key failed — trying force click");
     }
 
     if (!submitted) {
@@ -138,46 +158,99 @@ export class SessionManager {
       }
     }
 
+    await page.waitForTimeout(600);
+    await snap("04-after-submit");
+
     // ── Step 5: Wait for login to complete ────────────────────────────────────
     // chessfriends.com may show an x-msgbox modal ("You have been logged out from another device")
     // after a successful login — we must dismiss it before getGameUser() becomes non-null.
     // Poll in a loop: dismiss any modal, check if logged in, repeat until success or timeout.
-    logger.debug("Waiting for CF login to complete...");
+    logger.info("Waiting for CF login to complete (polling 35 s)...");
 
     const loginDeadline = Date.now() + 35_000;
     let loggedIn = false;
+    let pollIter = 0;
 
     while (Date.now() < loginDeadline) {
+      pollIter++;
+
       // 1. Dismiss any visible x-msgbox by clicking its OK/confirm button
       const msgbox = page.locator(".x-msgbox").first();
       const msgboxVisible = await msgbox.isVisible().catch(() => false);
       if (msgboxVisible) {
         const msgText = (await msgbox.textContent().catch(() => "")) ?? "";
-        logger.debug({ msgText }, "Detected x-msgbox — looking for OK button to dismiss");
-        // Sencha Touch msgbox: button is .x-button inside the box
+        logger.info({ msgText: msgText.slice(0, 200) }, "Detected x-msgbox — dismissing");
         const okBtn = msgbox.locator(".x-button").last();
         await okBtn.click().catch(() => {});
-        logger.info({ msgText }, "Dismissed x-msgbox");
         await page.waitForTimeout(800);
+        await snap(`05-msgbox-dismissed-${pollIter}`);
       }
 
       // 2. Check if login is now complete
-      const isLoggedIn = await page.evaluate(() => {
-        try {
-          const cf = (window as unknown as Record<string, unknown>)["CF"] as Record<string, unknown> | undefined;
-          if (!cf) return false;
-          const store = cf["Store"] as Record<string, unknown> | undefined;
-          if (!store) return false;
-          const getUser = store["getGameUser"] as (() => unknown) | undefined;
-          return typeof getUser === "function" && !!getUser();
-        } catch { return false; }
-      }).catch(() => false);
+      // Strategy A: CF.Store.gameUser direct property (most reliable — never null for logged-in user)
+      // Strategy B: CF.Store.getGameUser() function call (prototype method)
+      // Strategy C: DOM — Sign In button gone + New Game / nav visible
+      let isLoggedIn = false;
+      let evalError: string | null = null;
+      let evalDebug: unknown = null;
+      try {
+        const evalResult = await page.evaluate(() => {
+          try {
+            const cf = (window as unknown as Record<string, unknown>)["CF"] as Record<string, unknown> | undefined;
+            if (!cf) return { ok: false, reason: "no_cf" };
+            const store = cf["Store"] as Record<string, unknown> | undefined;
+            if (!store) return { ok: false, reason: "no_store" };
+
+            // Strategy A: direct gameUser property
+            const gameUser = store["gameUser"] as unknown;
+            if (gameUser && typeof gameUser === "object" && (gameUser as Record<string, unknown>)["nickname"]) {
+              return { ok: true, method: "gameUser_prop", nickname: (gameUser as Record<string, unknown>)["nickname"] };
+            }
+
+            // Strategy B: getGameUser() function
+            const getUser = store["getGameUser"] as (() => unknown) | undefined;
+            if (typeof getUser === "function") {
+              const u = getUser();
+              if (u) return { ok: true, method: "getGameUser_fn" };
+            }
+
+            // Strategy C: DOM check — Sign In button absent means we're past the login screen
+            const signInGone = !document.querySelector('.x-button[class*="signin"]');
+            const hasNewGame = Array.from(document.querySelectorAll(".x-button"))
+              .some((b) => (b as HTMLElement).offsetParent && (b as HTMLElement).innerText?.trim() === "New Game");
+            if (hasNewGame) {
+              return { ok: true, method: "dom_new_game_btn" };
+            }
+
+            return {
+              ok: false,
+              reason: "all_checks_failed",
+              gameUserType: typeof gameUser,
+              gameUserVal: String(gameUser).slice(0, 50),
+              getUserType: typeof getUser,
+              signInGone,
+              hasNewGame,
+            };
+          } catch (e) {
+            return { ok: false, reason: "exception", msg: String(e) };
+          }
+        });
+        isLoggedIn = !!evalResult?.ok;
+        evalDebug = evalResult;
+      } catch (e) {
+        evalError = String(e);
+      }
+
+      if (pollIter <= 4 || pollIter % 10 === 0) {
+        logger.info({ pollIter, isLoggedIn, evalError, evalDebug, url: page.url() }, "Login poll");
+      }
 
       if (isLoggedIn) { loggedIn = true; break; }
 
       // 3. Short pause before next poll
       await page.waitForTimeout(500);
     }
+    await snap("06-login-loop-end");
 
     if (!loggedIn) {
       // Final settle + last chance check
@@ -194,8 +267,10 @@ export class SessionManager {
   }
 
   private async isAlreadyLoggedIn(page: Page): Promise<boolean> {
-    // Platform-specific JS check: works for chessfriends.com (CF.Store.getGameUser)
-    // Use inline function to avoid serialization issues in bundled code.
+    // Multi-strategy check for chessfriends.com logged-in state.
+    // Strategy A: CF.Store.gameUser direct property (populated on login)
+    // Strategy B: CF.Store.getGameUser() prototype method
+    // Strategy C: DOM — "New Game" button visible (only shown when logged in)
     try {
       const jsResult = await page.evaluate(() => {
         try {
@@ -203,8 +278,19 @@ export class SessionManager {
           if (!cf) return false;
           const store = cf["Store"] as Record<string, unknown> | undefined;
           if (!store) return false;
+
+          // Strategy A: direct property
+          const gameUser = store["gameUser"] as unknown;
+          if (gameUser && typeof gameUser === "object" && (gameUser as Record<string, unknown>)["nickname"]) return true;
+
+          // Strategy B: function call
           const getUser = store["getGameUser"] as (() => unknown) | undefined;
-          return typeof getUser === "function" && !!getUser();
+          if (typeof getUser === "function" && !!getUser()) return true;
+
+          // Strategy C: DOM
+          const hasNewGame = Array.from(document.querySelectorAll(".x-button"))
+            .some((b) => (b as HTMLElement).offsetParent && (b as HTMLElement).innerText?.trim() === "New Game");
+          return hasNewGame;
         } catch { return false; }
       });
       if (jsResult) return true;

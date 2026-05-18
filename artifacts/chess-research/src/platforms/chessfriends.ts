@@ -36,13 +36,20 @@ export const CHESSFRIENDS_SESSION_DEFAULTS = {
 // ─── Logged-in detection ──────────────────────────────────────────────────────
 
 /**
- * Script injected into page to test whether the user is already authenticated.
- * `CF.Store.getGameUser()` returns null before login, a user object after.
+ * Multi-strategy login check:
+ * A) CF.Store.isLoggedIn() — direct method (most reliable)
+ * B) CF.Store.gameUser direct property populated on login
+ * C) CF.Store.getGameUser() prototype method
  */
 export const CF_IS_LOGGED_IN_SCRIPT = `
 (function() {
   try {
-    return !!(window.CF && CF.Store && CF.Store.getGameUser && CF.Store.getGameUser());
+    if (!window.CF || !CF.Store) return false;
+    if (typeof CF.Store.isLoggedIn === 'function' && CF.Store.isLoggedIn()) return true;
+    var u = CF.Store.gameUser;
+    if (u && typeof u === 'object' && u.nickname) return true;
+    if (typeof CF.Store.getGameUser === 'function' && CF.Store.getGameUser()) return true;
+    return false;
   } catch(e) { return false; }
 })()
 ` as const;
@@ -292,15 +299,30 @@ const CF_NAVIGATE_TO_PLAY_SCRIPT = `
 })()
 `;
 
+/** Quick helper: try CF_GET_FEN_SCRIPT and return result or null */
+async function tryExtractFen(page: Page): Promise<string | null> {
+  try {
+    const result = await page.evaluate(
+      (script: string) => (new Function("return " + script))() as string | null,
+      CF_GET_FEN_SCRIPT
+    );
+    if (typeof result === "string" && result.length > 10) return result;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Starts a chess match on chessfriends.com after authentication.
  *
  * Strategy:
  * 1. Wait for CF.Store + Ext.Viewport to be fully rendered.
- * 2. Return early if a board is already visible (game in progress).
- * 3. Inject JS to click .cf-button-play via Sencha components.
- * 4. Fall back to Playwright text-based div button clicks.
- * 5. Wait up to 90 s for .cf-chessboard to appear.
+ * 2. Check for a REAL active game via ComponentQuery FEN extraction.
+ *    (.cf-chessboard is also present on the home page Daily Puzzle —
+ *     we must not return early for that.)
+ * 3. If no real game, click the "New Game" button and wait for
+ *    an opponent + real FEN to become available (up to 90 s).
  */
 export async function startChessfriendsMatch(page: Page): Promise<boolean> {
   _log.info("Waiting for chessfriends app to initialise");
@@ -308,67 +330,78 @@ export async function startChessfriendsMatch(page: Page): Promise<boolean> {
   // ── 1. Wait for Ext + CF namespaces + viewport ─────────────────────────────
   await waitForCFReady(page, 45_000);
 
-  // ── 2. Board already visible? ───────────────────────────────────────────────
-  const alreadyVisible = await page.locator(".cf-chessboard").isVisible().catch(() => false);
-  if (alreadyVisible) {
-    _log.info("Chess board already visible — game already in progress");
+  // ── 2. Check for a REAL active game (ComponentQuery FEN) ───────────────────
+  //    The home page shows a Daily Puzzle board (.cf-chessboard) but has no
+  //    Ext chess component with a live game — CF_GET_FEN_SCRIPT will return
+  //    null there. Only return true when FEN is actually extractable.
+  const fenNow = await tryExtractFen(page);
+  if (fenNow) {
+    _log.info({ fen: fenNow }, "Real game board detected (FEN extractable) — joining in-progress game");
     return true;
   }
 
-  // ── 3. JS injection — click .cf-button-play or Ext tab ────────────────────
-  try {
-    const result = await page.evaluate(
-      (script: string) => (new Function("return " + script))() as { ok: boolean; method?: string; reason?: string },
-      CF_NAVIGATE_TO_PLAY_SCRIPT
-    );
-    _log.debug({ result }, "CF navigate-to-play result");
-    if (result?.ok) {
-      _log.info({ method: result.method }, "Navigated to play view via Ext/JS");
-    }
-  } catch (err) {
-    _log.debug({ err }, "JS navigation injection failed — falling back to DOM clicks");
-  }
+  // ── 3. Navigate to lobby then start matchmaking ─────────────────────────────
+  //
+  // chessfriends.com game-start sequence (live-tested):
+  //   Step A: click "New Game" on home screen → navigates to lobby (#7)
+  //   Step B: click "Challenge" button in lobby → sends FilterTool.sendNewGameOffer
+  //           (starts actual opponent search)
+  //
+  // NOTE: clicking "New Game" AGAIN at the lobby actually CANCELS the search
+  //       (sends FilterTool.disposeNewGameOffer) — do NOT click it a second time.
 
-  // Wait briefly after JS trigger
-  await page.waitForTimeout(2_000);
+  _log.info("No active game detected — starting matchmaking (New Game → Challenge)");
 
-  // ── 4. DOM click fallbacks for .cf-button-play ────────────────────────────
-  const cfPlayBtn = page.locator(".cf-button-play").first();
-  if (await cfPlayBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-    _log.info("Clicking .cf-button-play");
-    await cfPlayBtn.click().catch(() => {});
-    await page.waitForTimeout(2_000);
-  }
-
-  // Text-based fallbacks on div buttons
-  const buttonTexts = [
-    "Play Now!", "Play Now", "Play now",
-    "Quick Game", "Quick game",
-    "Find Game", "Find game",
-    "New Game", "New game",
-    "Play", "Find Opponent",
-  ];
-  for (const text of buttonTexts) {
+  // Step A: click the home-screen "New Game" button
+  const newGameTexts = ["New Game", "New game", "Play Now!", "Play Now"];
+  for (const text of newGameTexts) {
     const btn = page.locator(`.x-button:has-text("${text}")`).first();
-    if (await btn.isVisible({ timeout: 1_000 }).catch(() => false)) {
-      _log.info({ text }, "Clicking div play button by text");
-      await btn.click().catch(() => {});
+    if (await btn.isVisible({ timeout: 1_200 }).catch(() => false)) {
+      _log.info({ text }, "Step A: clicking game-start button to reach lobby");
+      await btn.click({ force: true }).catch(() => {});
       break;
     }
   }
 
-  // ── 5. Wait for board ──────────────────────────────────────────────────────
-  _log.info("Waiting for chess board to appear (up to 90 s)…");
-  try {
-    await page.waitForSelector(".cf-chessboard", { timeout: 90_000 });
-    _log.info("Chess board appeared — match started");
-    return true;
-  } catch {
-    const visible = await page.locator(".cf-chessboard").isVisible().catch(() => false);
-    if (visible) return true;
-    _log.error("Board never appeared after 90 s — match start failed");
-    return false;
+  // Wait for lobby to render
+  await page.waitForTimeout(2_000);
+
+  // Step B: click "Challenge" to send FilterTool.sendNewGameOffer (actual matchmaking)
+  const challengeBtn = page.locator('.x-button:has-text("Challenge")').first();
+  const challengeVisible = await challengeBtn.isVisible({ timeout: 3_000 }).catch(() => false);
+  if (challengeVisible) {
+    _log.info("Step B: clicking Challenge to send sendNewGameOffer (start opponent search)");
+    await challengeBtn.click({ force: true }).catch(() => {});
+  } else {
+    // Fallback: if Challenge not visible, try cf-tile-play (accept an open challenge)
+    const tilePlay = page.locator(".cf-tile-play").first();
+    if (await tilePlay.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      _log.info("Fallback: clicking cf-tile-play to accept open challenge");
+      await tilePlay.click({ force: true }).catch(() => {});
+    } else {
+      _log.warn("Neither Challenge nor cf-tile-play found — matchmaking may not start");
+    }
   }
+
+  // ── 4. Poll for a real game (FEN extractable) for up to 90 s ──────────────
+  _log.info("Waiting up to 90 s for a real game board to become available…");
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(2_000);
+    const fen = await tryExtractFen(page);
+    if (fen) {
+      _log.info({ fen }, "Real game board detected — match ready");
+      return true;
+    }
+    // Log progress every 10 s
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    if (remaining % 10 < 2) {
+      _log.debug({ remaining }, "Still waiting for opponent…");
+    }
+  }
+
+  _log.error("No real game board appeared within 90 s — match start failed");
+  return false;
 }
 
 // ─── Full session config factory ──────────────────────────────────────────────

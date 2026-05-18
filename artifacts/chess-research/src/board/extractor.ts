@@ -117,8 +117,10 @@ export class BoardExtractor {
 
     for (const sel of candidates) {
       try {
+        // Use a short timeout so we don't block for 30s when element doesn't exist
         const fen = await page.locator(sel).first().getAttribute(
-          this.config.fenAttribute
+          this.config.fenAttribute,
+          { timeout: 800 }
         );
         if (fen && validateFen(fen).valid) return fen;
       } catch { /* try next */ }
