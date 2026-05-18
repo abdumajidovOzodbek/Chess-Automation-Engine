@@ -6,6 +6,7 @@ import { SessionManager } from "./automation/session.ts";
 import { BoardExtractor } from "./board/extractor.ts";
 import { StockfishEngine } from "./engine/stockfish.ts";
 import { GameSynchronizer } from "./sync/synchronizer.ts";
+import { CFWebSocketCapture } from "./platforms/chessfriends-ws.ts";
 import { isGameOver, getGameResult } from "./board/index.ts";
 import type { Page } from "playwright";
 import type {
@@ -33,6 +34,12 @@ export interface ResearchSessionConfig {
    * Return true if the match was successfully started, false to abort.
    */
   matchInitiator?: (page: Page) => Promise<boolean>;
+  /**
+   * Whether to enable WebSocket frame capture (default: true).
+   * When enabled, WS game-state events feed into the board extractor
+   * to supplement (and in some cases replace) DOM polling.
+   */
+  enableWsCapture?: boolean;
 }
 
 /**
@@ -55,6 +62,7 @@ export class ChessResearchSession {
   private replay: ReplayTool;
   private config: ResearchSessionConfig;
   private gameEndResolve: ((result: string) => void) | null = null;
+  private wsCapture: CFWebSocketCapture | null = null;
 
   constructor(config: ResearchSessionConfig) {
     this.config = config;
@@ -79,6 +87,28 @@ export class ChessResearchSession {
     }
 
     const page = await this.browser.newPage("main");
+
+    // ── WebSocket capture ──────────────────────────────────────────────────────
+    // Attach BEFORE page.goto() so the listener is in place when the WS
+    // handshake occurs. ChessFriends game-state frames arrive after frame 60+
+    // so we capture everything without a count limit.
+    if (this.config.enableWsCapture !== false) {
+      this.wsCapture = new CFWebSocketCapture();
+      this.wsCapture.attach(page);
+
+      this.wsCapture.on("game_event", (event) => {
+        // Feed FEN from WS events into the extractor so DOM polling can be
+        // skipped or confirmed without an additional page.evaluate() round-trip.
+        if ("fen" in event && typeof event.fen === "string") {
+          this.extractor.setLastKnownFen(event.fen);
+          logger.debug({ fen: event.fen, wsEventType: event.type }, "WS FEN fed to extractor");
+        }
+        this.gameLogger.recordEvent("ws_game_event", { wsEventType: event.type, ...(event as object) });
+      });
+
+      logger.info("WebSocket capture enabled — attached to page before navigation");
+    }
+
     const authenticated = await this.sessionMgr.authenticate(page);
 
     if (!authenticated) {
@@ -118,6 +148,15 @@ export class ChessResearchSession {
 
     this.synchronizer.on("event", async (event: SyncEvent) => {
       logger.debug({ event: event.type }, "Sync event");
+
+      // Keep WS capture's internal FEN in sync with confirmed DOM FEN
+      if (
+        this.wsCapture &&
+        (event.type === "board_detected" || event.type === "move_executed")
+      ) {
+        const state = "state" in event ? event.state : undefined;
+        if (state?.fen) this.wsCapture.setCurrentFen(state.fen);
+      }
 
       if (event.type === "game_over") {
         logger.info({ result: event.result }, "Game ended");
@@ -184,6 +223,7 @@ export class ChessResearchSession {
   getReplayTool(): ReplayTool { return this.replay; }
   getEngine(): StockfishEngine { return this.engine; }
   getSynchronizer(): GameSynchronizer | null { return this.synchronizer; }
+  getWsCapture(): CFWebSocketCapture | null { return this.wsCapture; }
 
   async analyzePosition(fen: string, options?: EngineOptions) {
     return this.engine.analyzePosition(fen, options ?? { depth: 20 });

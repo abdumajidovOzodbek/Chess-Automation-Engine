@@ -13,6 +13,7 @@ import {
   getSession,
   startSession,
   stopSession,
+  getSessionWsCapture,
 } from "../lib/chess-sessions.js";
 import { uciToSan } from "@workspace/chess-research";
 
@@ -264,6 +265,61 @@ router.get("/sessions/:id/timing", (req, res) => {
     p95ThinkingMs: percentile(thinkTimes, 95),
     medianThinkingMs: percentile(thinkTimes, 50),
     durationMs: record.endedAt ? record.endedAt - record.startedAt : null,
+  });
+});
+
+router.get("/sessions/:id/ws-diagnostics", (req, res) => {
+  const id = req.params["id"];
+  if (!id) {
+    res.status(400).json({ error: "Missing session id" });
+    return;
+  }
+
+  const record = getSession(id);
+  if (!record) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  const wsCapture = getSessionWsCapture(id);
+  if (!wsCapture) {
+    res.json({
+      sessionId: id,
+      enabled: false,
+      message: "WebSocket capture not enabled for this session (non-ChessFriends URL or WS capture disabled)",
+    });
+    return;
+  }
+
+  const diag = wsCapture.getDiagnostics();
+  res.json({
+    sessionId: id,
+    enabled: true,
+    active: diag.active,
+    wsUrl: diag.wsUrl,
+    totalFrames: diag.totalFrames,
+    gameFrames: diag.gameFrames,
+    currentFen: diag.currentFen,
+    // Last 100 frames for debugging
+    recentFrames: diag.recentFrames.map((f) => ({
+      frameIndex: f.frameIndex,
+      dir: f.dir,
+      ts: f.ts,
+      hasGameEvent: !!f.gameEvent,
+      gameEventType: f.gameEvent?.type ?? null,
+      parsed: f.parsed,
+      innerParams: f.innerParams,
+    })),
+    // All frames that triggered a game event
+    allGameFrames: diag.allGameFrames.map((f) => ({
+      frameIndex: f.frameIndex,
+      dir: f.dir,
+      ts: f.ts,
+      gameEventType: f.gameEvent?.type ?? null,
+      gameEvent: f.gameEvent,
+      parsed: f.parsed,
+      innerParams: f.innerParams,
+    })),
   });
 });
 

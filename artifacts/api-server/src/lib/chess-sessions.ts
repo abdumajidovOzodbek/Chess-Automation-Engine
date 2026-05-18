@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { ChessResearchSession } from "@workspace/chess-research";
 import type { MoveLogEntry, BoardState } from "@workspace/chess-research";
+import type { CFWebSocketCapture } from "@workspace/chess-research/platforms";
 import {
   CHESSFRIENDS_SESSION_DEFAULTS,
   CHESSFRIENDS_EXTRACTOR_CONFIG,
@@ -62,6 +63,11 @@ export function getSession(id: string): SessionRecord | undefined {
   return sessions.get(id);
 }
 
+export function getSessionWsCapture(id: string): CFWebSocketCapture | null {
+  const record = sessions.get(id);
+  return record?.facade?.getWsCapture() ?? null;
+}
+
 export async function startSession(input: SessionInput): Promise<SessionRecord> {
   const id = randomUUID();
 
@@ -116,6 +122,8 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
     },
     logDir: "./logs/sessions",
     matchInitiator: isChessfriends ? startChessfriendsMatch : undefined,
+    // Enable WS capture for ChessFriends — game-state arrives via WS JSON-RPC
+    enableWsCapture: isChessfriends,
   });
 
   record.facade = facade;

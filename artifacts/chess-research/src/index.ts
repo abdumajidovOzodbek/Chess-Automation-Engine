@@ -8,3 +8,4 @@ export { ReplayTool } from "./logger/replay.ts";
 export { createLogger, logger } from "./logger/index.ts";
 
 export { ChessResearchSession } from "./session-facade.ts";
+export type { ResearchSessionConfig } from "./session-facade.ts";
