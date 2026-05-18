@@ -1,11 +1,14 @@
 /**
  * ChessFriends.com platform adapter.
  *
- * Selectors and JS injection scripts derived from static analysis of
- * chessfriends.com/gulp_build/web_19/js/build.min.js.
- *
- * The site is a Sencha Touch / ExtJS SPA. All game state is held inside
- * Ext component instances; pieces carry CSS classes wp/bp/wk/bk etc.
+ * Live-tested against chessfriends.com — Sencha Touch SPA.
+ * Key findings:
+ *  - All UI elements are <div class="x-button"> — no native <button> tags
+ *  - No [action] attributes in DOM; Ext component config has them but not DOM
+ *  - Login form: input[name="nickname"] + input[type="password"]
+ *  - Submit: input[type="submit"] (hidden) or Enter key on password field
+ *  - Game start: click .cf-button-play div (id: ext-touchcontainer-1)
+ *  - Wait strategy: CF.Store available + Ext.Viewport.rendered
  */
 
 import type { Page } from "playwright";
@@ -18,18 +21,16 @@ export const CHESSFRIENDS_URL = "https://www.chessfriends.com";
 // ─── Session selectors ────────────────────────────────────────────────────────
 
 /**
- * Chessfriends login flow:
- * 1. The login panel (.cf-login) becomes visible when the app loads or the
- *    user taps a login CTA.
- * 2. Username / password fields are Sencha Touch textfields — the actual
- *    <input> elements carry class `x-input-el` inside each `.x-field` row.
- * 3. Submit via `button[action=login]`.
+ * Chessfriends login flow (Sencha Touch SPA):
+ * 1. Click the "Sign In" div button (.x-button text "Sign In") on the welcome page
+ * 2. Login dialog appears with input[name="nickname"] and input[type="password"]
+ * 3. Fill credentials and press Enter (or click hidden input[type="submit"])
  */
 export const CHESSFRIENDS_SESSION_DEFAULTS = {
-  loginSelector: "button[action=login]",
-  usernameSelector: ".cf-login .x-input-el",
-  passwordSelector: ".cf-login .x-field:nth-of-type(2) .x-input-el, .cf-login input[type=password]",
-  submitSelector: "button[action=login]",
+  loginSelector: '.x-button:has-text("Sign In")',
+  usernameSelector: 'input[name="nickname"]',
+  passwordSelector: 'input[type="password"]',
+  submitSelector: 'input[type="submit"]',
 } as const;
 
 // ─── Logged-in detection ──────────────────────────────────────────────────────
@@ -45,6 +46,27 @@ export const CF_IS_LOGGED_IN_SCRIPT = `
   } catch(e) { return false; }
 })()
 ` as const;
+
+// ─── SPA readiness wait ───────────────────────────────────────────────────────
+
+/**
+ * Wait for the Sencha Touch app to finish initialising.
+ * Waits for CF.Store to be available AND Ext.Viewport to be rendered.
+ * This must be called before any UI interaction on chessfriends.com.
+ */
+export async function waitForCFReady(page: Page, timeoutMs = 45_000): Promise<void> {
+  const _log = createLogger("chessfriends-wait");
+  _log.info("Waiting for CF app (Store + Ext.Viewport) to be ready...");
+  await page.waitForFunction(
+    () => !!(window as any)?.CF?.Store &&
+          !!(window as any)?.Ext?.Viewport?.rendered,
+    { timeout: timeoutMs }
+  ).catch((e) => {
+    _log.warn({ err: String(e) }, "CF/Ext readiness wait timed out — proceeding anyway");
+  });
+  // Brief settle time for Ext layout to paint
+  await page.waitForTimeout(1_500);
+}
 
 // ─── FEN extraction ──────────────────────────────────────────────────────────
 
@@ -96,8 +118,6 @@ export const CF_GET_FEN_SCRIPT = `
       wp:'P', wn:'N', wb:'B', wr:'R', wq:'Q', wk:'K',
       bp:'p', bn:'n', bb:'b', br:'r', bq:'q', bk:'k'
     };
-    // Pieces are children of .adv-pieces; position encoded as CSS translate or
-    // square index. Attempt coordinate-based extraction via bounding-box ratios.
     var pieces = board.querySelectorAll('.adv-pieces > *');
     if (!pieces.length) return null;
     var boardRect = board.getBoundingClientRect();
@@ -203,67 +223,72 @@ export const CHESSFRIENDS_EXTRACTOR_CONFIG: BoardExtractorConfig = {
 const _log = createLogger("chessfriends-match");
 
 /**
- * JS injected after login to attempt navigation to the game / quick-play view.
- * Tries the Sencha/ExtJS component tree before falling back to DOM clicks.
+ * JS injected after login to navigate to the game view.
+ *
+ * Live-tested: the welcome page shows a .cf-button-play div (id: ext-touchcontainer-1)
+ * with text "Play Now!". Clicking this starts a game search.
+ * Ext buttons have no [action] attributes in the DOM — we use text-based matching.
  */
 const CF_NAVIGATE_TO_PLAY_SCRIPT = `
 (function() {
   try {
     if (!window.Ext) return {ok: false, reason: 'ext_not_loaded'};
 
-    // 1) Try known action attributes on Ext buttons
-    var actionAttrs = ['quickgame','newgame','play','computer','findopponent','challenge'];
-    for (var a = 0; a < actionAttrs.length; a++) {
-      var found = Ext.ComponentQuery.query('button[action=' + actionAttrs[a] + ']');
-      if (found && found.length) { found[0].fireEvent('tap', found[0]); return {ok:true, method:'ext_action_'+actionAttrs[a]}; }
+    // 1) Click .cf-button-play directly (the "Play Now!" button on welcome page)
+    var playBtn = document.querySelector('.cf-button-play');
+    if (playBtn && playBtn.offsetParent !== null) {
+      playBtn.click();
+      return {ok: true, method: 'dom_cf-button-play'};
     }
 
-    // 2) Try tabbar — activate a tab whose title contains "play" or "game"
-    var tabbars = Ext.ComponentQuery.query('tabbar');
-    for (var t = 0; t < tabbars.length; t++) {
-      var bar = tabbars[t];
-      var items = bar.getItems ? bar.getItems().items : [];
-      for (var i = 0; i < items.length; i++) {
-        var tab = items[i];
-        var title = (tab.getTitle && tab.getTitle()) || (tab.config && tab.config.title) || '';
-        if (/play|game|chess/i.test(title)) {
-          bar.setActiveTab ? bar.setActiveTab(tab) : tab.fireEvent('tap', tab);
-          return {ok:true, method:'tab_'+title};
+    // 2) Ext ComponentQuery — buttons with play-related text
+    if (Ext.ComponentQuery) {
+      var allBtns = Ext.ComponentQuery.query('button') || [];
+      for (var i = 0; i < allBtns.length; i++) {
+        var b = allBtns[i];
+        if (!b.rendered || b.hidden) continue;
+        var text = String(b.getText ? b.getText() : (b.config && b.config.text) || '');
+        var action = String((b.config && b.config.action) || b.action || '');
+        if (/play\s*now|quick.?game|find.?game|play!/i.test(text + action)) {
+          b.fireEvent('tap', b);
+          return {ok: true, method: 'ext_btn_text:' + text};
         }
       }
-    }
 
-    // 3) CF namespace — look for quickGame / startGame / findGame methods
-    if (window.CF) {
-      var keys = Object.keys(CF);
-      for (var k = 0; k < keys.length; k++) {
-        var obj = CF[keys[k]];
-        if (!obj || typeof obj !== 'object') continue;
-        var methods = ['quickGame','startGame','findGame','newGame','findOpponent'];
-        for (var m = 0; m < methods.length; m++) {
-          if (typeof obj[methods[m]] === 'function') {
-            obj[methods[m]]();
-            return {ok:true, method:'CF.'+keys[k]+'.'+methods[m]};
+      // 3) Try tabbar — find "Play" or "Game" tab
+      var tabbars = Ext.ComponentQuery.query('tabbar') || [];
+      for (var t = 0; t < tabbars.length; t++) {
+        var bar = tabbars[t];
+        var items = bar.getItems ? bar.getItems().items : [];
+        for (var j = 0; j < items.length; j++) {
+          var tab = items[j];
+          var title = (tab.getTitle && tab.getTitle()) || (tab.config && tab.config.title) || '';
+          if (/play|game|chess/i.test(title)) {
+            bar.setActiveTab ? bar.setActiveTab(tab) : tab.fireEvent('tap', tab);
+            return {ok: true, method: 'tab:' + title};
           }
         }
       }
     }
 
-    // 4) Walk all Ext components for any with a "play/game" xtype
-    var all = Ext.ComponentManager && Ext.ComponentManager.all;
-    var allKeys = all ? (all.keys || Object.keys(all)) : [];
-    for (var ak = 0; ak < allKeys.length; ak++) {
-      var cmp = all[allKeys[ak]] || (all.getByKey && all.getByKey(allKeys[ak]));
-      if (!cmp) continue;
-      var xtype = cmp.xtype || (cmp.config && cmp.config.xtype) || '';
-      if (/quickgame|newgame|findgame|opponent/i.test(xtype)) {
-        cmp.fireEvent('tap', cmp);
-        return {ok:true, method:'component_xtype_'+xtype};
+    // 4) CF namespace methods
+    if (window.CF) {
+      var cfKeys = Object.keys(CF);
+      for (var k = 0; k < cfKeys.length; k++) {
+        var obj = CF[cfKeys[k]];
+        if (!obj || typeof obj !== 'object') continue;
+        var methods = ['quickGame', 'startGame', 'findGame', 'newGame', 'findOpponent', 'playNow'];
+        for (var m = 0; m < methods.length; m++) {
+          if (typeof obj[methods[m]] === 'function') {
+            try { obj[methods[m]](); } catch(e) { continue; }
+            return {ok: true, method: 'CF.' + cfKeys[k] + '.' + methods[m]};
+          }
+        }
       }
     }
 
-    return {ok:false, reason:'no_play_action_found'};
-  } catch(e) { return {ok:false, reason:e.message}; }
+    return {ok: false, reason: 'no_play_action_found'};
+  } catch(e) { return {ok: false, reason: e.message}; }
 })()
 `;
 
@@ -271,21 +296,17 @@ const CF_NAVIGATE_TO_PLAY_SCRIPT = `
  * Starts a chess match on chessfriends.com after authentication.
  *
  * Strategy:
- * 1. Wait for the Ext/CF namespace to fully initialise.
+ * 1. Wait for CF.Store + Ext.Viewport to be fully rendered.
  * 2. Return early if a board is already visible (game in progress).
- * 3. Inject JS to navigate to the play view via Sencha components.
- * 4. Fall back to Playwright text-based button clicks.
- * 5. Wait up to 90 s for the .cf-chessboard element to appear.
+ * 3. Inject JS to click .cf-button-play via Sencha components.
+ * 4. Fall back to Playwright text-based div button clicks.
+ * 5. Wait up to 90 s for .cf-chessboard to appear.
  */
 export async function startChessfriendsMatch(page: Page): Promise<boolean> {
   _log.info("Waiting for chessfriends app to initialise");
 
-  // ── 1. Wait for Ext + CF namespaces ────────────────────────────────────────
-  await page.waitForFunction(
-    () => !!(window as unknown as Record<string, unknown>)["Ext"] &&
-          !!(window as unknown as Record<string, unknown>)["CF"],
-    { timeout: 45_000 }
-  ).catch(() => _log.warn("CF/Ext namespace did not appear within 45 s — proceeding anyway"));
+  // ── 1. Wait for Ext + CF namespaces + viewport ─────────────────────────────
+  await waitForCFReady(page, 45_000);
 
   // ── 2. Board already visible? ───────────────────────────────────────────────
   const alreadyVisible = await page.locator(".cf-chessboard").isVisible().catch(() => false);
@@ -294,7 +315,7 @@ export async function startChessfriendsMatch(page: Page): Promise<boolean> {
     return true;
   }
 
-  // ── 3. JS injection via Ext ComponentQuery ─────────────────────────────────
+  // ── 3. JS injection — click .cf-button-play or Ext tab ────────────────────
   try {
     const result = await page.evaluate(
       (script: string) => (new Function("return " + script))() as { ok: boolean; method?: string; reason?: string },
@@ -302,45 +323,38 @@ export async function startChessfriendsMatch(page: Page): Promise<boolean> {
     );
     _log.debug({ result }, "CF navigate-to-play result");
     if (result?.ok) {
-      _log.info({ method: result.method }, "Navigated to play view via Ext");
+      _log.info({ method: result.method }, "Navigated to play view via Ext/JS");
     }
   } catch (err) {
     _log.debug({ err }, "JS navigation injection failed — falling back to DOM clicks");
   }
 
-  // ── 4. DOM click fallbacks ─────────────────────────────────────────────────
-  const buttonTexts = [
-    "Quick Game", "Quick game", "Quick Play", "Quick play",
-    "Play", "Find Game", "Find game", "New Game", "New game",
-    "Play now", "Play Now", "Computer", "Find Opponent",
-  ];
+  // Wait briefly after JS trigger
+  await page.waitForTimeout(2_000);
 
-  for (const text of buttonTexts) {
-    try {
-      const btn = page.getByRole("button", { name: text, exact: false }).first();
-      if (await btn.isVisible({ timeout: 1_200 }).catch(() => false)) {
-        _log.info({ text }, "Clicking play button");
-        await btn.click();
-        break;
-      }
-    } catch { /* try next */ }
+  // ── 4. DOM click fallbacks for .cf-button-play ────────────────────────────
+  const cfPlayBtn = page.locator(".cf-button-play").first();
+  if (await cfPlayBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    _log.info("Clicking .cf-button-play");
+    await cfPlayBtn.click().catch(() => {});
+    await page.waitForTimeout(2_000);
   }
 
-  // Also try CSS class-based selectors
-  const cssCandidates = [
-    '[class*="quick-game"]', '[class*="quickgame"]',
-    '[class*="play-btn"]',  '[class*="start-game"]',
-    '[action="quickgame"]', '[action="play"]',
+  // Text-based fallbacks on div buttons
+  const buttonTexts = [
+    "Play Now!", "Play Now", "Play now",
+    "Quick Game", "Quick game",
+    "Find Game", "Find game",
+    "New Game", "New game",
+    "Play", "Find Opponent",
   ];
-  for (const sel of cssCandidates) {
-    try {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
-        _log.info({ sel }, "Clicking CSS-matched play element");
-        await el.click();
-        break;
-      }
-    } catch { /* try next */ }
+  for (const text of buttonTexts) {
+    const btn = page.locator(`.x-button:has-text("${text}")`).first();
+    if (await btn.isVisible({ timeout: 1_000 }).catch(() => false)) {
+      _log.info({ text }, "Clicking div play button by text");
+      await btn.click().catch(() => {});
+      break;
+    }
   }
 
   // ── 5. Wait for board ──────────────────────────────────────────────────────

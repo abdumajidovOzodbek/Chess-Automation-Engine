@@ -60,33 +60,64 @@ export class StockfishEngine extends EventEmitter {
   }
 
   private async resolveStockfishBinary(): Promise<string> {
-    const which = await import("child_process");
-    return new Promise((resolve) => {
-      const proc = which.spawn("which", ["stockfish"]);
+    // 1. Explicit env var (set by the API server workflow)
+    if (process.env.STOCKFISH_PATH) {
+      logger.debug({ path: process.env.STOCKFISH_PATH }, "Using STOCKFISH_PATH env var");
+      return process.env.STOCKFISH_PATH;
+    }
+
+    // 2. Try `which stockfish` — works when stockfish is in PATH
+    const cp = await import("child_process");
+    const fromWhich = await new Promise<string | null>((resolve) => {
+      const proc = cp.spawn("which", ["stockfish"]);
       let out = "";
       proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-      proc.on("close", (code) => {
-        if (code === 0 && out.trim()) {
-          resolve(out.trim());
-        } else {
-          try {
-            const req = createRequire(import.meta.url);
-            const sfPkg = req.resolve("stockfish");
-            resolve(sfPkg);
-          } catch {
-            resolve("stockfish");
-          }
-        }
-      });
+      proc.on("close", (code) => resolve(code === 0 && out.trim() ? out.trim() : null));
     });
+    if (fromWhich) {
+      logger.debug({ path: fromWhich }, "Found stockfish via which");
+      return fromWhich;
+    }
+
+    // 3. Known Nix store locations (Replit NixOS environment)
+    const { existsSync } = await import("fs");
+    const nixCandidates = [
+      "/nix/store/04bgcfhfqhm7r9ll8nfx7hymb8y8r5zk-stockfish-16/bin/stockfish",
+      "/nix/store/6mazfacbfr2c2di734v0rb4820ipa1xb-stockfish-15/bin/stockfish",
+      "/nix/store/7hmnik2vkcxw59f2pr6ipk34fj6y7w15-stockfish-14.1/bin/stockfish",
+    ];
+    for (const p of nixCandidates) {
+      if (existsSync(p)) {
+        logger.debug({ path: p }, "Found stockfish in Nix store");
+        return p;
+      }
+    }
+
+    // 4. Dynamic Nix store search via ls
+    try {
+      const found = await new Promise<string | null>((resolve) => {
+        const proc = cp.spawn("sh", ["-c", "ls /nix/store/*-stockfish-*/bin/stockfish 2>/dev/null | head -1"]);
+        let out = "";
+        proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+        proc.on("close", () => resolve(out.trim() || null));
+      });
+      if (found) {
+        logger.debug({ path: found }, "Found stockfish via nix store search");
+        return found;
+      }
+    } catch { /* ignore */ }
+
+    // 5. Fallback to system PATH (may fail)
+    logger.warn("Could not locate stockfish binary — falling back to 'stockfish' in PATH");
+    return "stockfish";
   }
 
   private async waitForReady(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.readyResolve = resolve;
       const timeout = setTimeout(() => {
-        reject(new Error("Stockfish initialization timeout (10s)"));
-      }, 10_000);
+        reject(new Error("Stockfish initialization timeout (30s)"));
+      }, 30_000);
 
       const origResolve = this.readyResolve;
       this.readyResolve = () => {

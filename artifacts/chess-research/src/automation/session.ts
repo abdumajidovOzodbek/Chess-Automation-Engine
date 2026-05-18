@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import { createLogger } from "../logger/index.ts";
 import type { SessionConfig } from "../types.ts";
-import { CF_IS_LOGGED_IN_SCRIPT } from "../platforms/chessfriends.ts";
+import { CF_IS_LOGGED_IN_SCRIPT, waitForCFReady } from "../platforms/chessfriends.ts";
 
 const logger = createLogger("session");
 
@@ -19,10 +19,10 @@ export class SessionManager {
       headless: true,
       slowMo: 0,
       timeout: 30_000,
-      loginSelector: 'a[href*="login"], a[href*="signin"], button:has-text("Log in"), button:has-text("Sign in")',
-      usernameSelector: 'input[name="username"], input[name="email"], input[type="email"], #username, #email',
-      passwordSelector: 'input[name="password"], input[type="password"], #password',
-      submitSelector: 'button[type="submit"], input[type="submit"], button:has-text("Log in"), button:has-text("Sign in")',
+      loginSelector: '.x-button:has-text("Sign In")',
+      usernameSelector: 'input[name="nickname"]',
+      passwordSelector: 'input[type="password"]',
+      submitSelector: 'input[type="submit"]',
       ...config,
     };
   }
@@ -33,7 +33,9 @@ export class SessionManager {
 
     try {
       await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
-      await page.waitForLoadState("networkidle").catch(() => {});
+
+      // Wait for the Sencha Touch / CF SPA to fully initialise before interacting
+      await waitForCFReady(page, 45_000);
 
       if (await this.isAlreadyLoggedIn(page)) {
         logger.info("Already authenticated — skipping login");
@@ -63,52 +65,148 @@ export class SessionManager {
   }
 
   private async performLogin(page: Page): Promise<void> {
+    // ── Step 1: Open the login dialog ─────────────────────────────────────────
     const loginSelector = this.config.loginSelector!;
     const loginBtn = page.locator(loginSelector).first();
 
-    if (await loginBtn.isVisible().catch(() => false)) {
-      logger.debug("Clicking login button to open form");
+    const loginBtnVisible = await loginBtn.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (loginBtnVisible) {
+      logger.debug({ loginSelector }, "Clicking login button to open form");
       await loginBtn.click();
+      // Wait for the login form inputs to appear
+      await page.waitForSelector('input[name="nickname"]', { timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(500);
+    } else {
+      logger.warn({ loginSelector }, "Login button not found — trying to fill form directly");
+    }
+
+    // ── Step 2: Fill username ──────────────────────────────────────────────────
+    const usernameField = page.locator(this.config.usernameSelector!).first();
+    await usernameField.waitFor({ state: "visible", timeout: 10_000 });
+    // Use fill() for reliability — type() triggers per-keystroke Sencha Touch events
+    // that can corrupt form state on chessfriends.com
+    await usernameField.click();
+    await usernameField.fill(this.config.username!);
+    logger.debug({ value: this.config.username }, "Username filled");
+
+    await page.waitForTimeout(300);
+
+    // ── Step 3: Fill password ──────────────────────────────────────────────────
+    const passwordField = page.locator(this.config.passwordSelector!).first();
+    await passwordField.waitFor({ state: "visible", timeout: 5_000 });
+    await passwordField.click();
+    await passwordField.fill(this.config.password!);
+    logger.debug("Password filled");
+
+    await page.waitForTimeout(400);
+
+    // ── Step 4: Submit the form ────────────────────────────────────────────────
+    // Primary: press Enter on the password field — most reliable for Sencha Touch forms
+    // Fallback A: click hidden input[type="submit"] with force
+    // Fallback B: click the "Sign In" fill button inside the dialog
+    let submitted = false;
+
+    // Primary: Enter key on password field (confirmed working in live tests)
+    try {
+      await passwordField.press("Enter");
+      submitted = true;
+      logger.debug("Submitted via Enter key on password field");
+    } catch (e) {
+      logger.debug({ err: e }, "Enter key failed — trying force click");
+    }
+
+    if (!submitted) {
+      try {
+        const submitEl = page.locator(this.config.submitSelector!).first();
+        await submitEl.click({ force: true, timeout: 3_000 });
+        submitted = true;
+        logger.debug({ selector: this.config.submitSelector }, "Submitted via submitSelector (force)");
+      } catch {
+        logger.debug("submitSelector force click failed — trying dialog Sign In button");
+      }
+    }
+
+    if (!submitted) {
+      // Last resort: find the "Sign In" fill button that appeared inside the dialog
+      const dialogSignIn = page.locator('.x-button.x-button-fill').filter({ hasText: /^Sign In$/ }).last();
+      try {
+        await dialogSignIn.click({ timeout: 3_000 });
+        submitted = true;
+        logger.debug("Submitted via dialog Sign In button");
+      } catch (e) {
+        logger.warn({ err: e }, "All submit strategies failed");
+      }
+    }
+
+    // ── Step 5: Wait for login to complete ────────────────────────────────────
+    // chessfriends.com may show an x-msgbox modal ("You have been logged out from another device")
+    // after a successful login — we must dismiss it before getGameUser() becomes non-null.
+    // Poll in a loop: dismiss any modal, check if logged in, repeat until success or timeout.
+    logger.debug("Waiting for CF login to complete...");
+
+    const loginDeadline = Date.now() + 35_000;
+    let loggedIn = false;
+
+    while (Date.now() < loginDeadline) {
+      // 1. Dismiss any visible x-msgbox by clicking its OK/confirm button
+      const msgbox = page.locator(".x-msgbox").first();
+      const msgboxVisible = await msgbox.isVisible().catch(() => false);
+      if (msgboxVisible) {
+        const msgText = (await msgbox.textContent().catch(() => "")) ?? "";
+        logger.debug({ msgText }, "Detected x-msgbox — looking for OK button to dismiss");
+        // Sencha Touch msgbox: button is .x-button inside the box
+        const okBtn = msgbox.locator(".x-button").last();
+        await okBtn.click().catch(() => {});
+        logger.info({ msgText }, "Dismissed x-msgbox");
+        await page.waitForTimeout(800);
+      }
+
+      // 2. Check if login is now complete
+      const isLoggedIn = await page.evaluate(() => {
+        try {
+          const cf = (window as unknown as Record<string, unknown>)["CF"] as Record<string, unknown> | undefined;
+          if (!cf) return false;
+          const store = cf["Store"] as Record<string, unknown> | undefined;
+          if (!store) return false;
+          const getUser = store["getGameUser"] as (() => unknown) | undefined;
+          return typeof getUser === "function" && !!getUser();
+        } catch { return false; }
+      }).catch(() => false);
+
+      if (isLoggedIn) { loggedIn = true; break; }
+
+      // 3. Short pause before next poll
       await page.waitForTimeout(500);
     }
 
-    const usernameField = page.locator(this.config.usernameSelector!).first();
-    await usernameField.waitFor({ state: "visible", timeout: 10_000 });
-    await usernameField.fill("");
-    await usernameField.type(this.config.username!, { delay: 40 + Math.random() * 30 });
-
-    await page.waitForTimeout(200 + Math.random() * 300);
-
-    const passwordField = page.locator(this.config.passwordSelector!).first();
-    await passwordField.waitFor({ state: "visible" });
-    await passwordField.fill("");
-    await passwordField.type(this.config.password!, { delay: 40 + Math.random() * 30 });
-
-    await page.waitForTimeout(300 + Math.random() * 400);
-
-    const submitBtn = page.locator(this.config.submitSelector!).first();
-    await submitBtn.click();
-
-    // For SPA sites (like chessfriends) there may be no navigation — wait briefly
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 8_000 }).catch(() => {}),
-      page.waitForTimeout(4_000),
-    ]);
-    await page.waitForLoadState("networkidle").catch(() => {});
-
-    if (!(await this.isAlreadyLoggedIn(page))) {
-      const errorMsg = await this.detectLoginError(page);
-      throw new Error(`Login failed${errorMsg ? `: ${errorMsg}` : ""}`);
+    if (!loggedIn) {
+      // Final settle + last chance check
+      await page.waitForTimeout(1_500);
+      loggedIn = await this.isAlreadyLoggedIn(page);
     }
+
+    if (!loggedIn) {
+      const errorMsg = await this.detectLoginError(page);
+      throw new Error(`Login failed${errorMsg ? `: ${errorMsg}` : " — CF.Store.getGameUser() still null after submit"}`);
+    }
+
+    logger.info("CF login verified — user authenticated");
   }
 
   private async isAlreadyLoggedIn(page: Page): Promise<boolean> {
     // Platform-specific JS check: works for chessfriends.com (CF.Store.getGameUser)
+    // Use inline function to avoid serialization issues in bundled code.
     try {
-      const jsResult = await page.evaluate(
-        (script: string) => (new Function("return " + script))() as boolean,
-        CF_IS_LOGGED_IN_SCRIPT
-      );
+      const jsResult = await page.evaluate(() => {
+        try {
+          const cf = (window as unknown as Record<string, unknown>)["CF"] as Record<string, unknown> | undefined;
+          if (!cf) return false;
+          const store = cf["Store"] as Record<string, unknown> | undefined;
+          if (!store) return false;
+          const getUser = store["getGameUser"] as (() => unknown) | undefined;
+          return typeof getUser === "function" && !!getUser();
+        } catch { return false; }
+      });
       if (jsResult) return true;
     } catch { /* not on chessfriends or CF not loaded yet */ }
 
@@ -138,6 +236,8 @@ export class SessionManager {
       "[class*='alert']",
       "[role='alert']",
       ".notification-danger",
+      ".x-msgbox",
+      ".cf-error",
     ];
     for (const sel of errorSelectors) {
       const el = page.locator(sel).first();
@@ -161,10 +261,13 @@ export class SessionManager {
     try {
       const currentUrl = page.url();
       await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
-      await page.waitForLoadState("networkidle").catch(() => {});
+
+      // Wait for SPA to reinitialise after reload
+      await waitForCFReady(page, 30_000);
 
       if (!currentUrl.includes(this.config.url.split("/")[2] ?? "")) {
         await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
+        await waitForCFReady(page, 30_000);
       }
 
       if (await this.isAlreadyLoggedIn(page)) {

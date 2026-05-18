@@ -29,3 +29,12 @@ externalPort = 8081
 [[ports]]
 localPort = 25086
 externalPort = 3000
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+LD_LIBRARY_PATH = "/nix/store/2mi3dqfmc56502p1vdr4pgyf6jl3hw2a-glib-2.84.3/lib:/nix/store/1ag0klg91f6gnhlx0iazgysahngp4rf8-nss-3.90.2/lib:/nix/store/1wx9nkcxavkfc01wg4qzqyd3710yvgf0-nspr-4.34/lib:/nix/store/4knwrajbbpnfzqgqw54s8zlv5sncm5dp-at-spi2-atk-2.38.0/lib:/nix/store/00bywbidfprrn50vrlzm58lq4i3h7fnh-at-spi2-core-2.50.2/lib:/nix/store/24w3s75aa2lrvvxsybficn8y3zxd27kp-mesa-libgbm-25.1.0/lib:/nix/store/231d6mmkylzr80pf30dbywa9x9aryjgy-dbus-1.14.10-lib/lib:/nix/store/1nsvsrqp5zm96r9p3rrq3yhlyw8jiy91-libX11-1.8.12/lib:/nix/store/130h99rn8fhk49izgll4nbs4yk5crf98-libxkbcommon-1.5.0/lib:/nix/store/0g7r7krqiz6g3nb3651sfa5myd9gqkzf-alsa-lib-1.2.11/lib:/nix/store/09aq563zkqcw9ikxn02p4bm13i2hz51r-libxcb-1.17.0/lib:/nix/store/21d3ipgrqn1l9z88ym3ja8b5g291s486-libXcomposite-0.4.6/lib:/nix/store/1xs5lr0w8z9brq1yrrnlddj7h0xpp0bk-libXdamage-1.1.6/lib:/nix/store/0046rn5sgi6l38zl81bg2r02zlzxqqbc-libXext-1.3.6/lib:/nix/store/176zb6rql061hawvybln7xn8c73jjbp4-libXfixes-6.0.1/lib:/nix/store/0ypjj16v283nfi76z4pa6wbyr0qqxrsp-libXrandr-1.5.2/lib:/nix/store/1bmhxjz5bjpdsn68hwkbr8rscmi68j3w-atk-2.36.0/lib"
+STOCKFISH_PATH = "/nix/store/04bgcfhfqhm7r9ll8nfx7hymb8y8r5zk-stockfish-16/bin/stockfish"
