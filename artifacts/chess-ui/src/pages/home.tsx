@@ -70,13 +70,23 @@ export function Home() {
                     <tr key={session.id} className="hover:bg-muted/30 transition-colors group">
                       <td className="px-4 py-3">
                         <Link href={`/sessions/${session.id}`} className="block">
-                          <StatusBadge status={session.status} />
+                          <div className="flex flex-col gap-1">
+                            <StatusBadge status={session.status} />
+                            {session.phase && session.status !== 'active' && session.status !== 'stopped' && (
+                              <span className="text-[10px] font-mono text-muted-foreground">{session.phase}</span>
+                            )}
+                          </div>
                         </Link>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">
                         <Link href={`/sessions/${session.id}`} className="block text-primary hover:underline truncate max-w-[200px]">
                           {session.url}
                         </Link>
+                        {session.errorMessage && (
+                          <span className="block text-[10px] text-destructive mt-1 truncate max-w-[200px]" title={session.errorMessage}>
+                            {session.errorMessage}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className="font-mono text-xs px-2 py-1 rounded bg-muted">

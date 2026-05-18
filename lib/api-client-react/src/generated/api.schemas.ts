@@ -88,6 +88,11 @@ export const SessionSummaryColor = {
 export interface SessionSummary {
   id: string;
   status: SessionSummaryStatus;
+  /**
+     * Human-readable description of the current phase (e.g. "Launching browser", "Waiting for match", "Playing")
+     * @nullable
+     */
+  phase?: string | null;
   url: string;
   color: SessionSummaryColor;
   startedAt: number;
@@ -98,6 +103,8 @@ export interface SessionSummary {
   result?: string | null;
   /** @nullable */
   currentFen?: string | null;
+  /** @nullable */
+  errorMessage?: string | null;
 }
 
 export type SessionStatus = typeof SessionStatus[keyof typeof SessionStatus];

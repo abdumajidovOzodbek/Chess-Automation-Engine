@@ -8,8 +8,10 @@
  * Ext component instances; pieces carry CSS classes wp/bp/wk/bk etc.
  */
 
+import type { Page } from "playwright";
 import type { ResearchSessionConfig } from "../session-facade.ts";
 import type { BoardExtractorConfig } from "../types.ts";
+import { createLogger } from "../logger/index.ts";
 
 export const CHESSFRIENDS_URL = "https://www.chessfriends.com";
 
@@ -195,6 +197,165 @@ export const CHESSFRIENDS_EXTRACTOR_CONFIG: BoardExtractorConfig = {
   customJsExtract: CF_GET_FEN_SCRIPT,
   customJsMoveExecutor: cfMakeMoveScript,
 };
+
+// ─── Match starter ────────────────────────────────────────────────────────────
+
+const _log = createLogger("chessfriends-match");
+
+/**
+ * JS injected after login to attempt navigation to the game / quick-play view.
+ * Tries the Sencha/ExtJS component tree before falling back to DOM clicks.
+ */
+const CF_NAVIGATE_TO_PLAY_SCRIPT = `
+(function() {
+  try {
+    if (!window.Ext) return {ok: false, reason: 'ext_not_loaded'};
+
+    // 1) Try known action attributes on Ext buttons
+    var actionAttrs = ['quickgame','newgame','play','computer','findopponent','challenge'];
+    for (var a = 0; a < actionAttrs.length; a++) {
+      var found = Ext.ComponentQuery.query('button[action=' + actionAttrs[a] + ']');
+      if (found && found.length) { found[0].fireEvent('tap', found[0]); return {ok:true, method:'ext_action_'+actionAttrs[a]}; }
+    }
+
+    // 2) Try tabbar — activate a tab whose title contains "play" or "game"
+    var tabbars = Ext.ComponentQuery.query('tabbar');
+    for (var t = 0; t < tabbars.length; t++) {
+      var bar = tabbars[t];
+      var items = bar.getItems ? bar.getItems().items : [];
+      for (var i = 0; i < items.length; i++) {
+        var tab = items[i];
+        var title = (tab.getTitle && tab.getTitle()) || (tab.config && tab.config.title) || '';
+        if (/play|game|chess/i.test(title)) {
+          bar.setActiveTab ? bar.setActiveTab(tab) : tab.fireEvent('tap', tab);
+          return {ok:true, method:'tab_'+title};
+        }
+      }
+    }
+
+    // 3) CF namespace — look for quickGame / startGame / findGame methods
+    if (window.CF) {
+      var keys = Object.keys(CF);
+      for (var k = 0; k < keys.length; k++) {
+        var obj = CF[keys[k]];
+        if (!obj || typeof obj !== 'object') continue;
+        var methods = ['quickGame','startGame','findGame','newGame','findOpponent'];
+        for (var m = 0; m < methods.length; m++) {
+          if (typeof obj[methods[m]] === 'function') {
+            obj[methods[m]]();
+            return {ok:true, method:'CF.'+keys[k]+'.'+methods[m]};
+          }
+        }
+      }
+    }
+
+    // 4) Walk all Ext components for any with a "play/game" xtype
+    var all = Ext.ComponentManager && Ext.ComponentManager.all;
+    var allKeys = all ? (all.keys || Object.keys(all)) : [];
+    for (var ak = 0; ak < allKeys.length; ak++) {
+      var cmp = all[allKeys[ak]] || (all.getByKey && all.getByKey(allKeys[ak]));
+      if (!cmp) continue;
+      var xtype = cmp.xtype || (cmp.config && cmp.config.xtype) || '';
+      if (/quickgame|newgame|findgame|opponent/i.test(xtype)) {
+        cmp.fireEvent('tap', cmp);
+        return {ok:true, method:'component_xtype_'+xtype};
+      }
+    }
+
+    return {ok:false, reason:'no_play_action_found'};
+  } catch(e) { return {ok:false, reason:e.message}; }
+})()
+`;
+
+/**
+ * Starts a chess match on chessfriends.com after authentication.
+ *
+ * Strategy:
+ * 1. Wait for the Ext/CF namespace to fully initialise.
+ * 2. Return early if a board is already visible (game in progress).
+ * 3. Inject JS to navigate to the play view via Sencha components.
+ * 4. Fall back to Playwright text-based button clicks.
+ * 5. Wait up to 90 s for the .cf-chessboard element to appear.
+ */
+export async function startChessfriendsMatch(page: Page): Promise<boolean> {
+  _log.info("Waiting for chessfriends app to initialise");
+
+  // ── 1. Wait for Ext + CF namespaces ────────────────────────────────────────
+  await page.waitForFunction(
+    () => !!(window as unknown as Record<string, unknown>)["Ext"] &&
+          !!(window as unknown as Record<string, unknown>)["CF"],
+    { timeout: 45_000 }
+  ).catch(() => _log.warn("CF/Ext namespace did not appear within 45 s — proceeding anyway"));
+
+  // ── 2. Board already visible? ───────────────────────────────────────────────
+  const alreadyVisible = await page.locator(".cf-chessboard").isVisible().catch(() => false);
+  if (alreadyVisible) {
+    _log.info("Chess board already visible — game already in progress");
+    return true;
+  }
+
+  // ── 3. JS injection via Ext ComponentQuery ─────────────────────────────────
+  try {
+    const result = await page.evaluate(
+      (script: string) => (new Function("return " + script))() as { ok: boolean; method?: string; reason?: string },
+      CF_NAVIGATE_TO_PLAY_SCRIPT
+    );
+    _log.debug({ result }, "CF navigate-to-play result");
+    if (result?.ok) {
+      _log.info({ method: result.method }, "Navigated to play view via Ext");
+    }
+  } catch (err) {
+    _log.debug({ err }, "JS navigation injection failed — falling back to DOM clicks");
+  }
+
+  // ── 4. DOM click fallbacks ─────────────────────────────────────────────────
+  const buttonTexts = [
+    "Quick Game", "Quick game", "Quick Play", "Quick play",
+    "Play", "Find Game", "Find game", "New Game", "New game",
+    "Play now", "Play Now", "Computer", "Find Opponent",
+  ];
+
+  for (const text of buttonTexts) {
+    try {
+      const btn = page.getByRole("button", { name: text, exact: false }).first();
+      if (await btn.isVisible({ timeout: 1_200 }).catch(() => false)) {
+        _log.info({ text }, "Clicking play button");
+        await btn.click();
+        break;
+      }
+    } catch { /* try next */ }
+  }
+
+  // Also try CSS class-based selectors
+  const cssCandidates = [
+    '[class*="quick-game"]', '[class*="quickgame"]',
+    '[class*="play-btn"]',  '[class*="start-game"]',
+    '[action="quickgame"]', '[action="play"]',
+  ];
+  for (const sel of cssCandidates) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
+        _log.info({ sel }, "Clicking CSS-matched play element");
+        await el.click();
+        break;
+      }
+    } catch { /* try next */ }
+  }
+
+  // ── 5. Wait for board ──────────────────────────────────────────────────────
+  _log.info("Waiting for chess board to appear (up to 90 s)…");
+  try {
+    await page.waitForSelector(".cf-chessboard", { timeout: 90_000 });
+    _log.info("Chess board appeared — match started");
+    return true;
+  } catch {
+    const visible = await page.locator(".cf-chessboard").isVisible().catch(() => false);
+    if (visible) return true;
+    _log.error("Board never appeared after 90 s — match start failed");
+    return false;
+  }
+}
 
 // ─── Full session config factory ──────────────────────────────────────────────
 

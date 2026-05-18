@@ -23,6 +23,7 @@ router.get("/sessions", (_req, res) => {
   const data = sessions.map((s) => ({
     id: s.id,
     status: s.status,
+    phase: s.phase ?? null,
     url: s.url,
     color: s.color,
     startedAt: s.startedAt,
@@ -30,6 +31,7 @@ router.get("/sessions", (_req, res) => {
     moveCount: s.moveCount,
     result: s.result ?? null,
     currentFen: s.currentFen ?? null,
+    errorMessage: s.errorMessage ?? null,
   }));
   res.json(data);
 });

@@ -299,6 +299,9 @@ components:
         status:
           type: string
           enum: [starting, active, paused, stopped, error]
+        phase:
+          type: ["string", "null"]
+          description: Human-readable description of the current phase (e.g. "Launching browser", "Waiting for match", "Playing")
         url:
           type: string
         color:
@@ -313,6 +316,8 @@ components:
         result:
           type: ["string", "null"]
         currentFen:
+          type: ["string", "null"]
+        errorMessage:
           type: ["string", "null"]
 
     Session:

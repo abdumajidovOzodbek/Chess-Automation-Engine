@@ -4,6 +4,7 @@ import type { MoveLogEntry, BoardState } from "@workspace/chess-research";
 import {
   CHESSFRIENDS_SESSION_DEFAULTS,
   CHESSFRIENDS_EXTRACTOR_CONFIG,
+  startChessfriendsMatch,
 } from "@workspace/chess-research/platforms";
 import { logger } from "./logger.js";
 
@@ -22,6 +23,7 @@ export interface SessionConfigSnapshot {
 export interface SessionRecord {
   id: string;
   status: SessionStatus;
+  phase?: string;
   url: string;
   color: "w" | "b";
   startedAt: number;
@@ -76,6 +78,7 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
   const record: SessionRecord = {
     id,
     status: "starting",
+    phase: "Launching browser",
     url: input.url,
     color: input.color,
     startedAt: Date.now(),
@@ -112,6 +115,7 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
       movetime: config.movetime,
     },
     logDir: "./logs/sessions",
+    matchInitiator: isChessfriends ? startChessfriendsMatch : undefined,
   });
 
   record.facade = facade;
@@ -119,6 +123,7 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
   facade.start()
     .then(() => {
       record.status = "active";
+      record.phase = "Playing";
       logger.info({ sessionId: id }, "Session started successfully");
 
       const sync = facade.getSynchronizer();

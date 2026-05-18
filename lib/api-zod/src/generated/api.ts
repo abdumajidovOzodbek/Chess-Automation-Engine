@@ -22,13 +22,15 @@ export const HealthCheckResponse = zod.object({
 export const ListSessionsResponseItem = zod.object({
   "id": zod.string(),
   "status": zod.enum(['starting', 'active', 'paused', 'stopped', 'error']),
+  "phase": zod.string().nullish().describe('Human-readable description of the current phase (e.g. \"Launching browser\", \"Waiting for match\", \"Playing\")'),
   "url": zod.string(),
   "color": zod.enum(['w', 'b']),
   "startedAt": zod.number(),
   "endedAt": zod.number().nullish(),
   "moveCount": zod.number(),
   "result": zod.string().nullish(),
-  "currentFen": zod.string().nullish()
+  "currentFen": zod.string().nullish(),
+  "errorMessage": zod.string().nullish()
 })
 export const ListSessionsResponse = zod.array(ListSessionsResponseItem)
 

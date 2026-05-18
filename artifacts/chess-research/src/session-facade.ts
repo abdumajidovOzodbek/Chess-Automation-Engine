@@ -7,6 +7,7 @@ import { BoardExtractor } from "./board/extractor.ts";
 import { StockfishEngine } from "./engine/stockfish.ts";
 import { GameSynchronizer } from "./sync/synchronizer.ts";
 import { isGameOver, getGameResult } from "./board/index.ts";
+import type { Page } from "playwright";
 import type {
   SessionConfig,
   BrowserConfig,
@@ -27,6 +28,11 @@ export interface ResearchSessionConfig {
   sync: Pick<SyncConfig, "color" | "autoMove" | "moveDelayMs" | "moveJitterMs">;
   engine?: EngineOptions;
   logDir?: string;
+  /**
+   * Optional callback called after authentication to start / join a match.
+   * Return true if the match was successfully started, false to abort.
+   */
+  matchInitiator?: (page: Page) => Promise<boolean>;
 }
 
 /**
@@ -77,6 +83,15 @@ export class ChessResearchSession {
 
     if (!authenticated) {
       throw new Error("Authentication failed — cannot start session");
+    }
+
+    if (this.config.matchInitiator) {
+      logger.info("Invoking matchInitiator to start/join a match");
+      const matchStarted = await this.config.matchInitiator(page);
+      if (!matchStarted) {
+        throw new Error("matchInitiator returned false — could not start a match. Make sure you are logged in and the site is reachable.");
+      }
+      logger.info("Match started successfully via matchInitiator");
     }
 
     const gs = this.gameLogger.startSession(
