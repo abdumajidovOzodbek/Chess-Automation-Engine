@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Link } from "wouter";
-import { useListSessions, useCreateSession, getListSessionsQueryKey, SessionSummaryStatus } from "@workspace/api-client-react";
+import { useListSessions, useCreateSession, getListSessionsQueryKey, } from "@workspace/api-client-react";
+import { useQuery } from "@tanstack/react-query";
 import { StatusBadge } from "@/components/layout";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,9 +12,27 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Activity, Plus, Loader2, Zap } from "lucide-react";
+import { Activity, Plus, Loader2, Zap, KeyRound, ShieldCheck } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ServerConfig {
+  chessfriends: {
+    username: string | null;
+    hasPassword: boolean;
+    password: string | null;
+  };
+  stockfish: {
+    depth: number;
+    movetime: number;
+    moveDelayMs: number;
+    moveJitterMs: number;
+  };
+}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
 
 const sessionSchema = z.object({
   url: z.string().url(),
@@ -26,6 +45,8 @@ const sessionSchema = z.object({
   moveJitterMs: z.coerce.number().default(400),
   headless: z.boolean().default(true),
 });
+
+// ─── Home page ────────────────────────────────────────────────────────────────
 
 export function Home() {
   const { data: sessions, isLoading } = useListSessions({ query: {
@@ -123,20 +144,25 @@ export function Home() {
   );
 }
 
-const CHESSFRIENDS_PRESET = {
-  url: "https://www.chessfriends.com",
-  color: "w" as const,
-  depth: 18,
-  movetime: 3000,
-  moveDelayMs: 350,
-  moveJitterMs: 500,
-  headless: true,
-};
+// ─── New session form ─────────────────────────────────────────────────────────
 
 function NewSessionForm() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createSession = useCreateSession();
+
+  // Fetch server-side config (saved credentials + strength defaults)
+  const { data: config } = useQuery<ServerConfig>({
+    queryKey: ["server-config"],
+    queryFn: async () => {
+      const res = await fetch("/api/config");
+      if (!res.ok) throw new Error("Failed to fetch config");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const hasSavedCreds = !!(config?.chessfriends.username && config?.chessfriends.hasPassword);
 
   const form = useForm<z.infer<typeof sessionSchema>>({
     resolver: zodResolver(sessionSchema),
@@ -153,12 +179,45 @@ function NewSessionForm() {
     }
   });
 
+  // Auto-fill credentials from server config once loaded
+  useEffect(() => {
+    if (config?.chessfriends.username) {
+      form.setValue("username", config.chessfriends.username);
+    }
+    if (config?.chessfriends.password) {
+      form.setValue("password", config.chessfriends.password);
+    }
+  }, [config]);
+
+  function applyChessfriendsPreset() {
+    form.setValue("url", "https://www.chessfriends.com");
+    form.setValue("color", "w");
+    // Max strength from server config or hardcoded max defaults
+    form.setValue("depth", config?.stockfish.depth ?? 30);
+    form.setValue("movetime", config?.stockfish.movetime ?? 10000);
+    form.setValue("moveDelayMs", config?.stockfish.moveDelayMs ?? 350);
+    form.setValue("moveJitterMs", config?.stockfish.moveJitterMs ?? 600);
+    form.setValue("headless", true);
+    // Auto-fill saved credentials
+    if (config?.chessfriends.username) form.setValue("username", config.chessfriends.username);
+    if (config?.chessfriends.password) form.setValue("password", config.chessfriends.password);
+  }
+
   function onSubmit(data: z.infer<typeof sessionSchema>) {
-    createSession.mutate({ data }, {
+    // If credentials are empty in form but saved server-side, use server values
+    const username = data.username || config?.chessfriends.username || undefined;
+    const password = data.password || config?.chessfriends.password || undefined;
+
+    createSession.mutate({
+      data: { ...data, username, password }
+    }, {
       onSuccess: () => {
-        toast({ title: "Session created" });
+        toast({ title: "Session created — Stockfish is connecting to ChessFriends" });
         queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
         form.reset();
+        // Re-apply saved credentials after reset
+        if (config?.chessfriends.username) form.setValue("username", config.chessfriends.username);
+        if (config?.chessfriends.password) form.setValue("password", config.chessfriends.password);
       },
       onError: (err) => {
         const msg = (err as { error?: string }).error ?? "Unknown error";
@@ -167,20 +226,11 @@ function NewSessionForm() {
     });
   }
 
-  function applyPreset(preset: typeof CHESSFRIENDS_PRESET) {
-    form.setValue("url", preset.url);
-    form.setValue("color", preset.color);
-    form.setValue("depth", preset.depth);
-    form.setValue("movetime", preset.movetime);
-    form.setValue("moveDelayMs", preset.moveDelayMs);
-    form.setValue("moveJitterMs", preset.moveJitterMs);
-    form.setValue("headless", preset.headless);
-  }
-
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
 
+        {/* Preset */}
         <div className="pb-1">
           <p className="text-xs text-muted-foreground uppercase mb-2">Quick Preset</p>
           <Button
@@ -188,12 +238,20 @@ function NewSessionForm() {
             variant="outline"
             size="sm"
             className="w-full font-mono text-xs border-primary/40 text-primary hover:bg-primary/10 hover:text-primary"
-            onClick={() => applyPreset(CHESSFRIENDS_PRESET)}
+            onClick={applyChessfriendsPreset}
           >
             <Zap className="w-3 h-3 mr-1.5" />
-            ChessFriends.com
+            ChessFriends — Max Strength
           </Button>
         </div>
+
+        {/* Saved credentials badge */}
+        {hasSavedCreds && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-mono">
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            Credentials saved for <span className="font-bold">{config?.chessfriends.username}</span>
+          </div>
+        )}
 
         <FormField control={form.control} name="url" render={({ field }) => (
           <FormItem>
@@ -208,7 +266,7 @@ function NewSessionForm() {
         <FormField control={form.control} name="color" render={({ field }) => (
           <FormItem>
             <FormLabel className="text-xs uppercase text-muted-foreground">Play As</FormLabel>
-            <Select onValueChange={field.onChange} defaultValue={field.value}>
+            <Select onValueChange={field.onChange} value={field.value}>
               <FormControl>
                 <SelectTrigger className="font-mono text-xs">
                   <SelectValue placeholder="Select color" />
@@ -261,18 +319,24 @@ function NewSessionForm() {
           )} />
         </div>
 
-        <div className="pt-2 border-t border-border">
+        <div className="pt-2 border-t border-border space-y-4">
           <FormField control={form.control} name="username" render={({ field }) => (
-            <FormItem className="mb-4">
-              <FormLabel className="text-xs uppercase text-muted-foreground">Username (opt)</FormLabel>
+            <FormItem>
+              <FormLabel className="text-xs uppercase text-muted-foreground flex items-center gap-1.5">
+                <KeyRound className="w-3 h-3" /> Username
+                {hasSavedCreds && <span className="text-emerald-400 text-[10px]">auto-filled</span>}
+              </FormLabel>
               <FormControl>
                 <Input className="font-mono text-xs" {...field} />
               </FormControl>
             </FormItem>
           )} />
           <FormField control={form.control} name="password" render={({ field }) => (
-            <FormItem className="mb-4">
-              <FormLabel className="text-xs uppercase text-muted-foreground">Password (opt)</FormLabel>
+            <FormItem>
+              <FormLabel className="text-xs uppercase text-muted-foreground flex items-center gap-1.5">
+                <KeyRound className="w-3 h-3" /> Password
+                {hasSavedCreds && <span className="text-emerald-400 text-[10px]">auto-filled</span>}
+              </FormLabel>
               <FormControl>
                 <Input type="password" className="font-mono text-xs" {...field} />
               </FormControl>
@@ -290,8 +354,15 @@ function NewSessionForm() {
           )} />
         </div>
 
-        <Button type="submit" className="w-full font-mono font-bold" disabled={createSession.isPending}>
-          {createSession.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "INITIATE"}
+        <Button
+          type="submit"
+          className="w-full font-mono font-bold"
+          disabled={createSession.isPending}
+        >
+          {createSession.isPending
+            ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />CONNECTING…</>
+            : "INITIATE SESSION"
+          }
         </Button>
       </form>
     </Form>
