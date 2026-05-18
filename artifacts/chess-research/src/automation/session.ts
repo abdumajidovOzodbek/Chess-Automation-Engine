@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import { createLogger } from "../logger/index.ts";
 import type { SessionConfig } from "../types.ts";
+import { CF_IS_LOGGED_IN_SCRIPT } from "../platforms/chessfriends.ts";
 
 const logger = createLogger("session");
 
@@ -88,7 +89,11 @@ export class SessionManager {
     const submitBtn = page.locator(this.config.submitSelector!).first();
     await submitBtn.click();
 
-    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
+    // For SPA sites (like chessfriends) there may be no navigation — wait briefly
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 8_000 }).catch(() => {}),
+      page.waitForTimeout(4_000),
+    ]);
     await page.waitForLoadState("networkidle").catch(() => {});
 
     if (!(await this.isAlreadyLoggedIn(page))) {
@@ -98,6 +103,15 @@ export class SessionManager {
   }
 
   private async isAlreadyLoggedIn(page: Page): Promise<boolean> {
+    // Platform-specific JS check: works for chessfriends.com (CF.Store.getGameUser)
+    try {
+      const jsResult = await page.evaluate(
+        (script: string) => (new Function("return " + script))() as boolean,
+        CF_IS_LOGGED_IN_SCRIPT
+      );
+      if (jsResult) return true;
+    } catch { /* not on chessfriends or CF not loaded yet */ }
+
     const logoutIndicators = [
       'a[href*="logout"]',
       'button:has-text("Log out")',

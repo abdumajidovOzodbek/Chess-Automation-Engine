@@ -5,14 +5,13 @@ import { StatusBadge } from "@/components/layout";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useForm, Controller } from "react-hook-form";
+import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Activity, Plus, Loader2 } from "lucide-react";
+import { Activity, Plus, Loader2, Zap } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -114,6 +113,16 @@ export function Home() {
   );
 }
 
+const CHESSFRIENDS_PRESET = {
+  url: "https://www.chessfriends.com",
+  color: "w" as const,
+  depth: 18,
+  movetime: 3000,
+  moveDelayMs: 350,
+  moveJitterMs: 500,
+  headless: true,
+};
+
 function NewSessionForm() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -148,9 +157,34 @@ function NewSessionForm() {
     });
   }
 
+  function applyPreset(preset: typeof CHESSFRIENDS_PRESET) {
+    form.setValue("url", preset.url);
+    form.setValue("color", preset.color);
+    form.setValue("depth", preset.depth);
+    form.setValue("movetime", preset.movetime);
+    form.setValue("moveDelayMs", preset.moveDelayMs);
+    form.setValue("moveJitterMs", preset.moveJitterMs);
+    form.setValue("headless", preset.headless);
+  }
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+
+        <div className="pb-1">
+          <p className="text-xs text-muted-foreground uppercase mb-2">Quick Preset</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full font-mono text-xs border-primary/40 text-primary hover:bg-primary/10 hover:text-primary"
+            onClick={() => applyPreset(CHESSFRIENDS_PRESET)}
+          >
+            <Zap className="w-3 h-3 mr-1.5" />
+            ChessFriends.com
+          </Button>
+        </div>
+
         <FormField control={form.control} name="url" render={({ field }) => (
           <FormItem>
             <FormLabel className="text-xs uppercase text-muted-foreground">Target URL</FormLabel>

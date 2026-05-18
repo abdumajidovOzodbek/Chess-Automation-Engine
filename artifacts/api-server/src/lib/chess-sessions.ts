@@ -1,6 +1,10 @@
 import { randomUUID } from "crypto";
 import { ChessResearchSession } from "@workspace/chess-research";
 import type { MoveLogEntry, BoardState } from "@workspace/chess-research";
+import {
+  CHESSFRIENDS_SESSION_DEFAULTS,
+  CHESSFRIENDS_EXTRACTOR_CONFIG,
+} from "@workspace/chess-research/platforms";
 import { logger } from "./logger.js";
 
 export type SessionStatus = "starting" | "active" | "paused" | "stopped" | "error";
@@ -83,16 +87,20 @@ export async function startSession(input: SessionInput): Promise<SessionRecord> 
 
   sessions.set(id, record);
 
+  const isChessfriends = input.url.includes("chessfriends.com");
+
   const facade = new ChessResearchSession({
     session: {
       url: input.url,
       username: input.username ?? undefined,
       password: input.password ?? undefined,
       headless: config.headless,
+      ...(isChessfriends ? CHESSFRIENDS_SESSION_DEFAULTS : {}),
     },
     browser: {
       headless: config.headless,
     },
+    extractor: isChessfriends ? CHESSFRIENDS_EXTRACTOR_CONFIG : undefined,
     sync: {
       color: input.color,
       autoMove: true,

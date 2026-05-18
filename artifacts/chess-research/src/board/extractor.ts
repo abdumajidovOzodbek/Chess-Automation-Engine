@@ -22,8 +22,12 @@ const PIECE_CLASS_MAP: Record<string, { type: PieceType; color: Color }> = {
   "black queen": { type: "q", color: "b" }, "black king": { type: "k", color: "b" },
 };
 
+type ResolvedExtractorConfig =
+  Required<Omit<BoardExtractorConfig, "customJsExtract" | "customJsMoveExecutor">> &
+  Pick<BoardExtractorConfig, "customJsExtract" | "customJsMoveExecutor">;
+
 export class BoardExtractor {
-  private config: Required<BoardExtractorConfig>;
+  private config: ResolvedExtractorConfig;
   private lastKnownFen: string = STARTING_FEN;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private onStateChange: ((state: BoardState) => void) | null = null;
@@ -36,6 +40,8 @@ export class BoardExtractor {
       fenAttribute: config.fenAttribute ?? "data-fen",
       apiEndpoint: config.apiEndpoint ?? "",
       pollIntervalMs: config.pollIntervalMs ?? 500,
+      customJsExtract: config.customJsExtract,
+      customJsMoveExecutor: config.customJsMoveExecutor,
     };
   }
 
@@ -55,6 +61,14 @@ export class BoardExtractor {
         }
       }
 
+      if (this.config.customJsExtract) {
+        const fenFromJs = await this.extractFenFromCustomJs(page);
+        if (fenFromJs) {
+          logger.debug({ fen: fenFromJs, method: "custom-js" }, "FEN extracted");
+          return parseFen(fenFromJs);
+        }
+      }
+
       const fenFromDom = await this.extractFenFromDom(page);
       if (fenFromDom) {
         logger.debug({ fen: fenFromDom, method: "dom" }, "FEN extracted");
@@ -65,6 +79,30 @@ export class BoardExtractor {
       return null;
     } catch (err) {
       logger.error({ err }, "Board extraction error");
+      return null;
+    }
+  }
+
+  private async extractFenFromCustomJs(page: Page): Promise<string | null> {
+    try {
+      const result = await page.evaluate(
+        (script: string) => {
+          // eslint-disable-next-line no-new-func
+          return (new Function("return " + script))() as string | null;
+        },
+        this.config.customJsExtract!
+      );
+      if (typeof result === "string" && result.length > 10) {
+        const validation = validateFen(result);
+        if (validation.valid) return result;
+        // If it looks like a position-only FEN (no metadata), append defaults
+        if (/^[rnbqkpRNBQKP1-8/]+$/.test(result)) {
+          const fullFen = result + " w KQkq - 0 1";
+          if (validateFen(fullFen).valid) return fullFen;
+        }
+      }
+      return null;
+    } catch {
       return null;
     }
   }
@@ -207,6 +245,21 @@ export class BoardExtractor {
     const to = uci.slice(2, 4);
 
     try {
+      // Tier 0: platform-provided JS executor (fastest, no DOM needed)
+      if (this.config.customJsMoveExecutor) {
+        const script = this.config.customJsMoveExecutor(uci);
+        const ok = await page.evaluate(
+          (s: string) => (new Function("return " + s))() as boolean,
+          script
+        ).catch(() => false);
+        if (ok) {
+          logger.debug({ uci, method: "custom-js" }, "Move executed");
+          return true;
+        }
+        logger.debug({ uci }, "Custom JS move executor returned false — falling back to click");
+      }
+
+      // Tier 1: data-square attribute or chess.com-style square class
       const fromSel = `[data-square="${from}"], .square-${from.charCodeAt(0) - 96}${from[1]}`;
       const toSel = `[data-square="${to}"], .square-${to.charCodeAt(0) - 96}${to[1]}`;
 

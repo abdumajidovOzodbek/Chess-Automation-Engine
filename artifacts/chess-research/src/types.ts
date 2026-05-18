@@ -95,6 +95,17 @@ export interface BoardExtractorConfig {
   fenAttribute?: string;
   apiEndpoint?: string;
   pollIntervalMs?: number;
+  /**
+   * Optional JS script (evaluated with page.evaluate) that returns a FEN
+   * string or null. Tried before the DOM extraction tier.
+   */
+  customJsExtract?: string;
+  /**
+   * Optional factory that, given a UCI move string, returns a JS script
+   * (evaluated with page.evaluate) that executes the move. Tried before
+   * the coordinate-click fallback.
+   */
+  customJsMoveExecutor?: (uci: string) => string;
 }
 
 export interface SyncConfig {
