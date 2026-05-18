@@ -49,7 +49,7 @@ args = "PORT=25086 BASE_PATH=/ pnpm --filter @workspace/chess-ui run dev"
 waitForPort = 25086
 
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "BEST_EFFORT_FALLBACK"
 expertMode = true
 
 [postMerge]
