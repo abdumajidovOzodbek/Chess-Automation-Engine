@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Chess Advisor",
+  "version": "1.0.0",
+  "description": "Stockfish move advisor for chessfriends.com",
+  "permissions": ["activeTab", "scripting", "storage", "debugger"],
+  "host_permissions": [
+    "https://www.chessfriends.com/*",
+    "http://localhost:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.chessfriends.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://www.chessfriends.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Chess Advisor"
+  },
+  "commands": {
+    "get-best-move": {
+      "suggested_key": { "default": "Ctrl+Shift+B" },
+      "description": "Get best move from Stockfish"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

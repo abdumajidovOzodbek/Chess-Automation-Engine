@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Chess Advisor (chess.com)",
+  "version": "1.0.0",
+  "description": "Stockfish move advisor for chess.com",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://www.chess.com/*",
+    "https://chess.com/*",
+    "http://localhost:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.chess.com/*", "https://chess.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://www.chess.com/*", "https://chess.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Chess Advisor (chess.com)"
+  },
+  "commands": {
+    "get-best-move": {
+      "suggested_key": { "default": "Ctrl+Shift+B" },
+      "description": "Get best move from Stockfish"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

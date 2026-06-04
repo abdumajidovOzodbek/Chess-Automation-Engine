@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, sans-serif; width: 380px; padding: 14px; background: #1a1a1a; color: #eee; margin: 0; }
+  h3 { margin: 0 0 10px 0; color: #00ff88; }
+  button { width: 100%; padding: 10px; background: #00ff88; color: #000; border: 0; border-radius: 6px; font-weight: 900; font-size: 14px; cursor: pointer; margin-bottom: 6px; }
+  button:hover { background: #00cc66; }
+  button.secondary { background: #333; color: #00ff88; border: 1px solid #00ff88; }
+  button.off { background: #333; color: #888; border: 1px solid #555; }
+  button.danger { background: #ff4444; color: #fff; }
+  button.time-btn { width: auto; flex: 1; padding: 6px 8px; font-size: 11px; margin-bottom: 0; background: #333; color: #00ff88; border: 1px solid #00ff88; border-radius: 4px; min-width: 50px; }
+  button.time-btn.active { background: #00ff88; color: #000; }
+  button.time-btn:hover { background: #444; }
+  button.time-btn.active:hover { background: #00cc66; }
+  .info { font-size: 11px; color: #888; margin-top: 6px; line-height: 1.5; }
+  kbd { background: #333; padding: 2px 6px; border-radius: 3px; color: #00ff88; font-family: monospace; font-size: 11px; }
+  #status { margin-top: 8px; padding: 8px; background: #222; border-radius: 4px; font-size: 11px; min-height: 18px; max-height: 320px; overflow: auto; white-space: pre-wrap; font-family: monospace; }
+  .ok { color: #00ff88; }
+  .err { color: #ff4444; }
+  .warn { color: #ffaa00; font-size: 11px; margin: 6px 0; padding: 6px; background: #2a1f00; border: 1px solid #ffaa00; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h3>♟️ Chess Advisor</h3>
+  <button id="autoToggle">⏳ Loading…</button>
+  <button id="autoplayToggle">⏳ Loading…</button>
+  <button id="premoveToggle">⏳ Loading…</button>
+  <div style="margin-top:10px;padding:8px;background:#222;border-radius:4px;font-size:12px;">
+    <div style="margin-bottom:6px;color:#00ff88;font-weight:bold;">⏱ Think time: <span id="thinkVal">—</span></div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+      <button class="time-btn" data-ms="0">AUTO</button>
+      <button class="time-btn" data-ms="200">200ms</button>
+      <button class="time-btn" data-ms="500">500ms</button>
+      <button class="time-btn" data-ms="1000">1s</button>
+      <button class="time-btn" data-ms="2000">2s</button>
+      <button class="time-btn" data-ms="3000">3s</button>
+    </div>
+    <div style="font-size:10px;color:#888;margin-top:6px;">AUTO scales with clock. Higher = stronger but uses more time per move.</div>
+  </div>
+  <div id="autoplayWarning" class="warn" style="display:none;">⚠️ Auto-play clicks pieces for you. Use only on practice/test accounts. May violate platform ToS.</div>
+  <button id="getMove" class="secondary">🎯 Get Move Now (manual)</button>
+  <button id="runDiag" class="secondary">🔬 Run Diagnostics</button>
+  <button id="checkServer" class="secondary">Check Stockfish Server</button>
+  <div id="status">Ready</div>
+  <div class="info">
+    Hotkey: <kbd>Ctrl+Shift+B</kbd> for manual request.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
