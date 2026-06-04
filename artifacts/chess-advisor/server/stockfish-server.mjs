@@ -11,14 +11,60 @@ import http from 'http';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { promisify } from 'util';
+import { exec as execCallback } from 'child_process';
 
+const exec = promisify(execCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 8765;
 
-const STOCKFISH_EXE = path.join(
-  __dirname,
-  '..', '..', '..', 'stockfish-bin', 'sf18', 'stockfish', 'stockfish-windows-x86-64-avx2.exe'
-);
+// Try to find stockfish in multiple locations
+async function findStockfish() {
+  const fs = await import('fs');
+  
+  // Try common installation paths (check local directory first!)
+  const possiblePaths = [
+    // Local server directory (EASIEST - just drop stockfish.exe here)
+    path.join(__dirname, 'stockfish.exe'),
+    path.join(__dirname, 'stockfish-windows-x86-64-avx2.exe'),
+    // Old project location
+    path.join(__dirname, '..', '..', '..', 'stockfish-bin', 'stockfish', 'stockfish-windows-x86-64-avx2.exe'),
+    path.join(__dirname, '..', '..', '..', 'stockfish-bin', 'sf18', 'stockfish', 'stockfish-windows-x86-64-avx2.exe'),
+    // System installation
+    'C:\\Program Files\\Stockfish\\stockfish.exe',
+    'C:\\Program Files\\Stockfish\\stockfish-windows-x86-64-avx2.exe',
+    '/usr/local/bin/stockfish',
+    '/usr/bin/stockfish',
+  ];
+
+  for (const p of possiblePaths) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+
+  // Try system PATH
+  try {
+    if (process.platform === 'win32') {
+      const { stdout } = await exec('where stockfish', { timeout: 3000 }).catch(() => ({ stdout: '' }));
+      if (stdout.trim()) return stdout.trim().split('\n')[0];
+    } else {
+      const { stdout } = await exec('which stockfish', { timeout: 3000 }).catch(() => ({ stdout: '' }));
+      if (stdout.trim()) return stdout.trim();
+    }
+  } catch {}
+
+  throw new Error(`Stockfish not found!
+
+Please download Stockfish and place it in one of these locations:
+  1. ${path.join(__dirname, 'stockfish.exe')} ⭐ EASIEST
+  2. C:\\Program Files\\Stockfish\\stockfish.exe
+  3. Or add to your system PATH
+
+Download from: https://github.com/official-stockfish/Stockfish/releases/download/sf_16/stockfish-windows-x86-64-avx2.zip`);
+}
+
+let STOCKFISH_EXE = null;
 
 class Stockfish {
   constructor() {
@@ -313,13 +359,27 @@ process.on('unhandledRejection', (reason) => {
   console.error('[server] unhandled rejection:', reason);
 });
 
-console.log('Starting Stockfish at: ' + STOCKFISH_EXE);
+console.log('🔍 Looking for Stockfish...');
+try {
+  STOCKFISH_EXE = await findStockfish();
+  console.log('✅ Found Stockfish at: ' + STOCKFISH_EXE);
+} catch (e) {
+  console.error('❌ ' + e.message);
+  console.error('\n📥 Download Stockfish from: https://stockfishchess.org/download/');
+  console.error('   Extract and place stockfish.exe in one of these locations:');
+  console.error('   - C:\\Program Files\\Stockfish\\stockfish.exe');
+  console.error('   - Add to system PATH');
+  process.exit(1);
+}
+
+console.log('🚀 Starting Stockfish...');
 try {
   await sf.start();
   sf.init();
   console.log('✅ Stockfish ready');
 } catch (e) {
   console.error('❌ Failed to start Stockfish:', e.message);
+  console.error('   Make sure the Stockfish executable has proper permissions.');
   process.exit(1);
 }
 
