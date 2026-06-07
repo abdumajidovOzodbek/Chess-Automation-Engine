@@ -48,5 +48,7 @@ Thumbs.db
 .cache/
 .local/
 
-# Stockfish downloads
+# Stockfish downloads and binaries
 stockfish.zip
+stockfish-18.zip
+stockfish-bin/
