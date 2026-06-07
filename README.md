@@ -1,11 +1,11 @@
 # Chess Automation Engine
 
-Real-time chess assistance powered by Stockfish 16. Visual overlay system that shows best moves directly on your chessboard.
+Real-time chess assistance powered by Stockfish 18. Visual overlay system that shows best moves directly on your chessboard.
 
 ## ✨ Features
 
 - 🎯 **Visual Move Overlay** - Glowing arrows showing best moves
-- ⚡ **Real-time Analysis** - Stockfish 16 at maximum strength
+- ⚡ **Real-time Analysis** - Stockfish 18 at maximum strength
 - 🌐 **Multi-platform** - Works on chessfriends.com and chess.com
 - 🧠 **Smart Time Management** - Adapts thinking time to game complexity
 - 🎨 **Clean UI** - Non-intrusive visual indicators
@@ -27,6 +27,9 @@ You should see:
 ```
 
 **Note:** Stockfish is already included! No download needed.
+
+> **Latest**: Now running Stockfish 18 (Jan 2026 release, ~100 Elo stronger than SF16)
+> See [UPGRADE-TO-SF18.md](UPGRADE-TO-SF18.md) for upgrade details.
 
 ### 2. Load Browser Extension
 
@@ -62,7 +65,7 @@ Chess-Automation-Engine/
 │   │   └── QUICKSTART.md      # Quick setup guide
 │   ├── api-server/            # Main API server
 │   └── chess-ui/              # Web UI dashboard
-├── stockfish-bin/             # Stockfish 16 binary (included)
+├── stockfish-bin/             # Stockfish 18 binary (included)
 └── README.md                  # This file
 ```
 
